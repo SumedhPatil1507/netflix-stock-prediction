@@ -1,15 +1,15 @@
 import streamlit as st
 import joblib
 import pandas as pd
-
-# Load model
-model = joblib.load("models/model.pkl")
+import os
 
 st.title("📈 Netflix Stock Prediction App")
-
 st.write("Enter stock details")
 
-# Inputs (MATCH TRAINING FEATURES)
+model_path = os.path.join(os.path.dirname(__file__), "..", "models", "model.pkl")
+model = joblib.load(model_path)
+
+# Inputs
 open_price = st.number_input("Open Price")
 high_price = st.number_input("High Price")
 low_price = st.number_input("Low Price")
@@ -20,7 +20,7 @@ ma7 = st.number_input("MA7")
 ma21 = st.number_input("MA21")
 ret = st.number_input("Return")
 
-# Create dataframe EXACTLY same as training
+# Feature dataframe
 features = pd.DataFrame([[open_price, high_price, low_price, close_price, volume, ma7, ma21, ret]],
                         columns=['Open','High','Low','Close','Volume','MA7','MA21','Return'])
 
