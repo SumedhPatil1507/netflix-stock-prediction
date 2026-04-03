@@ -255,54 +255,157 @@ with tab_eda:
         st.warning(f"Could not load data for EDA: {e}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — CHARTS (saved outputs)
+# TAB 3 — CHARTS (live, generated from data — no pre-generated PNGs needed)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_charts:
-    st.subheader("Generated Analysis Charts")
-    st.caption("Run `python main.py` to regenerate all charts.")
+    st.subheader("Interactive Technical Analysis Charts")
 
-    OUTPUTS = os.path.join(REPO_ROOT, "outputs")
+    try:
+        df = get_data()
 
-    chart_map = {
-        "Moving Averages":       "moving_avg.png",
-        "Bollinger Bands":       "bollinger_bands.png",
-        "RSI":                   "rsi.png",
-        "MACD":                  "macd.png",
-        "Actual vs Predicted":   "model_pred.png",
-        "Residuals":             "residuals.png",
-        "Feature Importance":    "feature_importance.png",
-        "SHAP Summary":          "shap_summary.png",
-        "SHAP Bar":              "shap_bar.png",
-        "5-Year Forecast":       "forecast.png",
-        "CV Fold Scores":        "cv_scores.png",
-        "Volatility":            "volatility.png",
-        "Heatmap":               "heatmap.png",
-        "Histogram":             "hist_close_returns.png",
-    }
+        chart_choice = st.selectbox("Select chart", [
+            "Price + Moving Averages",
+            "Bollinger Bands (Last 1 Year)",
+            "RSI (14)",
+            "MACD",
+            "Volume & OBV",
+            "Volatility Regime",
+            "Yearly Returns Heatmap",
+            "Drawdown",
+            "Return Distribution",
+            "Correlation Heatmap",
+        ])
 
-    keys = list(chart_map.keys())
-    for i in range(0, len(keys), 2):
-        cols = st.columns(2)
-        for j, col in enumerate(cols):
-            if i + j < len(keys):
-                name = keys[i + j]
-                path = os.path.join(OUTPUTS, chart_map[name])
-                with col:
-                    if os.path.exists(path):
-                        st.image(path, caption=name, use_column_width=True)
-                    else:
-                        st.info(f"{name} — not generated yet")
+        if chart_choice == "Price + Moving Averages":
+            fig, ax = plt.subplots(figsize=(12, 5))
+            ax.plot(df.index, df['Close'], label='Close', linewidth=1, alpha=0.8)
+            for ma, color in [('MA7','orange'),('MA21','green'),('MA50','red'),('MA200','purple')]:
+                if ma in df.columns:
+                    ax.plot(df.index, df[ma], label=ma, linewidth=1, color=color)
+            ax.set_title("Close Price with Moving Averages")
+            ax.legend()
+            st.pyplot(fig); plt.close()
 
-    # Metrics JSON
-    metrics_path = os.path.join(OUTPUTS, "metrics.json")
-    if os.path.exists(metrics_path):
-        import json
-        with open(metrics_path) as f:
-            metrics = json.load(f)
-        st.markdown("#### Model Metrics")
-        mc = st.columns(len(metrics))
-        for col, (k, v) in zip(mc, metrics.items()):
-            col.metric(k, f"{v:.4f}")
+        elif chart_choice == "Bollinger Bands (Last 1 Year)":
+            recent = df.tail(252)
+            fig, ax = plt.subplots(figsize=(12, 5))
+            ax.plot(recent.index, recent['Close'], label='Close', linewidth=1.5)
+            ax.plot(recent.index, recent['BB_Upper'], '--', color='red',   alpha=0.7, label='Upper Band')
+            ax.plot(recent.index, recent['BB_Lower'], '--', color='green', alpha=0.7, label='Lower Band')
+            ax.fill_between(recent.index, recent['BB_Lower'], recent['BB_Upper'], alpha=0.08, color='blue')
+            ax.set_title("Bollinger Bands — Last 1 Year")
+            ax.legend()
+            st.pyplot(fig); plt.close()
+
+        elif chart_choice == "RSI (14)":
+            recent = df.tail(365)
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
+            ax1.plot(recent.index, recent['Close'], linewidth=1)
+            ax1.set_title("Close Price")
+            ax2.plot(recent.index, recent['RSI'], color='purple', linewidth=1)
+            ax2.axhline(70, color='red',   linestyle='--', alpha=0.7, label='Overbought (70)')
+            ax2.axhline(30, color='green', linestyle='--', alpha=0.7, label='Oversold (30)')
+            ax2.axhline(50, color='gray',  linestyle=':',  alpha=0.5)
+            ax2.set_ylim(0, 100)
+            ax2.set_title("RSI (14)")
+            ax2.legend()
+            st.pyplot(fig); plt.close()
+
+        elif chart_choice == "MACD":
+            recent = df.tail(365)
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
+            ax1.plot(recent.index, recent['Close'], linewidth=1)
+            ax1.set_title("Close Price")
+            ax2.plot(recent.index, recent['MACD'],        label='MACD',   color='blue',   linewidth=1)
+            ax2.plot(recent.index, recent['MACD_Signal'], label='Signal', color='orange', linewidth=1)
+            colors = ['green' if v >= 0 else 'red' for v in recent['MACD_Hist']]
+            ax2.bar(recent.index, recent['MACD_Hist'], color=colors, alpha=0.4, label='Histogram')
+            ax2.axhline(0, color='gray', linestyle='--', alpha=0.5)
+            ax2.set_title("MACD")
+            ax2.legend()
+            st.pyplot(fig); plt.close()
+
+        elif chart_choice == "Volume & OBV":
+            recent = df.tail(365)
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
+            ax1.bar(recent.index, recent['Volume'], color='steelblue', alpha=0.6, width=1)
+            ax1.plot(recent.index, recent['Volume_MA10'], color='orange', linewidth=1.5, label='MA10')
+            ax1.set_title("Volume")
+            ax1.legend()
+            ax2.plot(recent.index, recent['OBV'], color='teal', linewidth=1)
+            ax2.set_title("On-Balance Volume (OBV)")
+            st.pyplot(fig); plt.close()
+
+        elif chart_choice == "Volatility Regime":
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
+            ax1.plot(df.index, df['Close'], linewidth=0.8)
+            ax1.set_title("Close Price")
+            ax2.plot(df.index, df['Volatility'], color='darkorange', linewidth=0.8)
+            ax2.fill_between(df.index, df['Volatility'], alpha=0.3, color='darkorange')
+            ax2.set_title("20-Day Rolling Volatility (%)")
+            st.pyplot(fig); plt.close()
+
+        elif chart_choice == "Yearly Returns Heatmap":
+            import seaborn as sns
+            df_yr = df.copy()
+            df_yr['Year']  = df_yr.index.year
+            df_yr['Month'] = df_yr.index.month
+            monthly_ret = df_yr.groupby(['Year','Month'])['Return'].mean().unstack()
+            fig, ax = plt.subplots(figsize=(14, 8))
+            sns.heatmap(monthly_ret, cmap='RdYlGn', center=0, annot=False,
+                        linewidths=0.3, ax=ax, cbar_kws={'label': 'Avg Daily Return (%)'})
+            ax.set_title("Monthly Average Daily Return Heatmap")
+            ax.set_xlabel("Month"); ax.set_ylabel("Year")
+            st.pyplot(fig); plt.close()
+
+        elif chart_choice == "Drawdown":
+            roll_max = df['Close'].cummax()
+            drawdown = (df['Close'] - roll_max) / roll_max * 100
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
+            ax1.plot(df.index, df['Close'], linewidth=0.8)
+            ax1.set_title("Close Price")
+            ax2.fill_between(df.index, drawdown, 0, color='red', alpha=0.4)
+            ax2.set_title("Drawdown from All-Time High (%)")
+            st.pyplot(fig); plt.close()
+
+        elif chart_choice == "Return Distribution":
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            ret = df['Return'].dropna()
+            axes[0].hist(ret, bins=120, color='steelblue', edgecolor='none', density=True)
+            axes[0].set_title("Daily Return Distribution")
+            axes[0].set_xlabel("Return (%)")
+            import seaborn as sns
+            sns.boxplot(y=ret, ax=axes[1], color='coral')
+            axes[1].set_title("Return Boxplot")
+            st.pyplot(fig); plt.close()
+
+        elif chart_choice == "Correlation Heatmap":
+            import seaborn as sns
+            cols = ['Return','RSI','MACD_Norm','BB_Pct','ATR_Norm',
+                    'Volatility','Stoch_K','Williams_R','CCI','Momentum5']
+            available = [c for c in cols if c in df.columns]
+            corr = df[available].dropna().corr()
+            fig, ax = plt.subplots(figsize=(10, 8))
+            sns.heatmap(corr, annot=True, fmt='.2f', cmap='coolwarm',
+                        linewidths=0.5, ax=ax)
+            ax.set_title("Feature Correlation Heatmap")
+            st.pyplot(fig); plt.close()
+
+        # ── Metrics from saved JSON ───────────────────────────────────────────
+        metrics_path = os.path.join(REPO_ROOT, "outputs", "metrics.json")
+        if os.path.exists(metrics_path):
+            import json
+            with open(metrics_path) as f:
+                metrics = json.load(f)
+            st.markdown("---")
+            st.markdown("#### Model Metrics")
+            mc = st.columns(len(metrics))
+            for col, (k, v) in zip(mc, metrics.items()):
+                col.metric(k, f"{v:.4f}")
+
+    except Exception as e:
+        st.warning(f"Could not load data for charts: {e}")
+        st.exception(e)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — ABOUT
@@ -311,21 +414,19 @@ with tab_about:
     st.markdown("""
 ### About This App
 
-This app predicts the **next-day closing price** of Netflix stock using an ensemble ML model.
+Predicts the **next-day return (%)** of Netflix stock using a manual stacking ensemble, then converts it back to a price.
 
-**Model:** VotingRegressor (GradientBoosting + RandomForest) with RobustScaler  
-**Validation:** 5-fold walk-forward cross-validation  
-**Features (29 total):**
-- Lag prices (Lag1–Lag10)
-- Rolling mean/std (5, 10 windows)
-- Returns, log returns, volatility
-- RSI (14), MACD + signal + histogram
-- Bollinger Bands (width, %B)
-- ATR (14), price range
-- Price vs MA50/MA200
-- Volume ratio
-- Calendar features (day of week, month)
+**Model:** Manual Stacking — XGBoost + LightGBM + RandomForest + ExtraTrees → Ridge meta-learner  
+**Validation:** 5-fold walk-forward (time-series) cross-validation  
+**Target:** Next-day return (%) — stationary, no price-level bias  
+**Features (49 total):** Lag prices/returns, RSI (7 & 14), MACD, Bollinger Bands, ATR, Stochastic %K/%D, Williams %R, CCI, OBV, EMA crossover, momentum ratios, price vs MAs, volatility, calendar
 
-**Data:** Netflix historical OHLCV from 2002 to present  
-**Source code:** [GitHub](https://github.com)
+**Key metric to watch:** Directional Accuracy (`Dir_Acc`) — % of days the model correctly predicts up/down. Above 52% is meaningful signal.
+
+**Data:** Netflix historical OHLCV — May 2002 to present (~5,900 trading days)
+
+**Source code:** [GitHub — SumedhPatil1507/netflix-stock-prediction](https://github.com/SumedhPatil1507/netflix-stock-prediction)
+
+---
+> ⚠️ This is a research/learning project. Do not use for real trading decisions.
     """)
