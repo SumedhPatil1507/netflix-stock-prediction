@@ -1,214 +1,252 @@
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import seaborn as sns
 import numpy as np
 import pandas as pd
 
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error
-
 from statsmodels.tsa.arima.model import ARIMA
+from sklearn.model_selection import TimeSeriesSplit
 
 sns.set_style("whitegrid")
+sns.set_palette("husl")
 
-# --------------------------------------------------
-# 1. HISTOGRAMS
-# --------------------------------------------------
+OUT = "outputs"
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+def _save(name):
+    plt.tight_layout()
+    plt.savefig(f"{OUT}/{name}", dpi=120)
+    plt.close()
+
+
+# ── 1. Close price distribution ───────────────────────────────────────────────
 def plot_histograms(df):
-    plt.figure()
-    sns.histplot(df['Close'], bins=60, kde=True)
-    plt.title("Close Price Distribution")
-    plt.savefig("outputs/hist_close.png")
-    plt.close()
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    sns.histplot(df['Close'], bins=60, kde=True, ax=axes[0])
+    axes[0].set_title("Close Price Distribution")
 
-    df['Return'] = df['Close'].pct_change() * 100
-    plt.figure()
-    sns.histplot(df['Return'].dropna(), bins=100, kde=True)
-    plt.title("Returns Distribution")
-    plt.savefig("outputs/hist_returns.png")
-    plt.close()
+    ret = df['Close'].pct_change().dropna() * 100
+    sns.histplot(ret, bins=100, kde=True, ax=axes[1], color='coral')
+    axes[1].set_title("Daily Returns Distribution (%)")
+    _save("hist_close_returns.png")
 
 
-# --------------------------------------------------
-# 2. BARPLOTS
-# --------------------------------------------------
+# ── 2. Yearly average bar ─────────────────────────────────────────────────────
 def plot_barplots(df):
-    df['Year'] = df.index.year
-    yearly = df.groupby('Year')['Close'].mean()
-
-    plt.figure()
-    yearly.plot(kind='bar')
-    plt.title("Avg Close Price per Year")
-    plt.savefig("outputs/bar_year.png")
-    plt.close()
+    yearly = df['Close'].resample('YE').mean()
+    plt.figure(figsize=(14, 5))
+    yearly.plot(kind='bar', color='steelblue')
+    plt.title("Average Close Price per Year")
+    plt.xticks(rotation=45)
+    _save("bar_year.png")
 
 
-# --------------------------------------------------
-# 3. BOXPLOTS
-# --------------------------------------------------
+# ── 3. Box plot by year ───────────────────────────────────────────────────────
 def plot_boxplots(df):
-    df['Year'] = df.index.year
-
-    plt.figure(figsize=(12,6))
-    sns.boxplot(x='Year', y='Close', data=df)
+    d = df.copy()
+    d['Year'] = d.index.year
+    plt.figure(figsize=(16, 6))
+    sns.boxplot(x='Year', y='Close', data=d)
     plt.xticks(rotation=60)
-    plt.title("Boxplot Close by Year")
-    plt.savefig("outputs/boxplot.png")
-    plt.close()
+    plt.title("Close Price Distribution by Year")
+    _save("boxplot.png")
 
 
-# --------------------------------------------------
-# 4. VIOLIN PLOTS
-# --------------------------------------------------
+# ── 4. Violin plot ────────────────────────────────────────────────────────────
 def plot_violin(df):
-    df['Return'] = df['Close'].pct_change() * 100
-    df['Year'] = df.index.year
-
-    plt.figure(figsize=(12,6))
-    sns.violinplot(x='Year', y='Return', data=df)
+    d = df.copy()
+    d['Return'] = d['Close'].pct_change() * 100
+    d['Year']   = d.index.year
+    plt.figure(figsize=(16, 6))
+    sns.violinplot(x='Year', y='Return', data=d)
     plt.xticks(rotation=60)
-    plt.title("Violin Plot Returns")
-    plt.savefig("outputs/violin.png")
-    plt.close()
+    plt.title("Return Distribution by Year")
+    _save("violin.png")
 
 
-# --------------------------------------------------
-# 5. PAIRPLOTS
-# --------------------------------------------------
+# ── 5. Pair plot ──────────────────────────────────────────────────────────────
 def plot_pairplot(df):
-    df['Return'] = df['Close'].pct_change()
-    cols = ['Close','Volume','Return']
-
-    sns.pairplot(df[cols].dropna())
-    plt.savefig("outputs/pairplot.png")
-    plt.close()
+    cols = ['Close', 'Volume', 'Return', 'Volatility', 'RSI']
+    available = [c for c in cols if c in df.columns]
+    sns.pairplot(df[available].dropna(), diag_kind='kde', plot_kws={'alpha': 0.3})
+    _save("pairplot.png")
 
 
-# --------------------------------------------------
-# 6. SCATTERPLOTS
-# --------------------------------------------------
+# ── 6. Scatter: Volume vs Close ───────────────────────────────────────────────
 def plot_scatter(df):
-    df['Return'] = df['Close'].pct_change()
-
-    plt.figure()
-    sns.scatterplot(x=df['Volume'], y=df['Close'])
-    plt.title("Volume vs Close")
-    plt.savefig("outputs/scatter_volume_close.png")
-    plt.close()
+    plt.figure(figsize=(8, 5))
+    sns.scatterplot(x=df['Volume'], y=df['Close'], alpha=0.3)
+    plt.title("Volume vs Close Price")
+    _save("scatter_volume_close.png")
 
 
-# --------------------------------------------------
-# 7. CORRELATION HEATMAP
-# --------------------------------------------------
+# ── 7. Correlation heatmap ────────────────────────────────────────────────────
 def plot_heatmap(df):
-    df['Return'] = df['Close'].pct_change()
-    corr = df[['Open','High','Low','Close','Volume','Return']].dropna().corr()
+    cols = ['Open', 'High', 'Low', 'Close', 'Volume',
+            'Return', 'RSI', 'MACD', 'ATR', 'Volatility', 'BB_Width']
+    available = [c for c in cols if c in df.columns]
+    corr = df[available].dropna().corr()
+    plt.figure(figsize=(12, 10))
+    sns.heatmap(corr, annot=True, fmt='.2f', cmap='coolwarm', linewidths=0.5)
+    plt.title("Feature Correlation Heatmap")
+    _save("heatmap.png")
 
-    plt.figure(figsize=(10,8))
-    sns.heatmap(corr, annot=True, cmap='coolwarm')
-    plt.title("Correlation Heatmap")
-    plt.savefig("outputs/heatmap.png")
-    plt.close()
 
-
-# --------------------------------------------------
-# 8. FEATURE ENGINEERING VISUALS
-# --------------------------------------------------
-def plot_feature_engineering(df):
-    df['MA50'] = df['Close'].rolling(50).mean()
-    df['MA200'] = df['Close'].rolling(200).mean()
-
-    plt.figure(figsize=(12,6))
-    plt.plot(df['Close'], label='Close')
-    plt.plot(df['MA50'], label='MA50')
-    plt.plot(df['MA200'], label='MA200')
+# ── 8. Moving averages ────────────────────────────────────────────────────────
+def plot_moving_averages(df):
+    plt.figure(figsize=(14, 6))
+    plt.plot(df.index, df['Close'], label='Close', alpha=0.6, linewidth=1)
+    for ma, color in [('MA7', 'orange'), ('MA21', 'green'), ('MA50', 'red'), ('MA200', 'purple')]:
+        if ma in df.columns:
+            plt.plot(df.index, df[ma], label=ma, color=color, linewidth=1.2)
     plt.legend()
-    plt.title("Moving Averages")
-    plt.savefig("outputs/moving_avg.png")
-    plt.close()
+    plt.title("Close Price with Moving Averages")
+    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    _save("moving_avg.png")
 
 
-# --------------------------------------------------
-# 9. TIME SERIES
-# --------------------------------------------------
+# ── 9. Bollinger Bands ────────────────────────────────────────────────────────
+def plot_bollinger_bands(df):
+    recent = df.tail(252)  # last ~1 year
+    plt.figure(figsize=(14, 6))
+    plt.plot(recent.index, recent['Close'], label='Close', linewidth=1.5)
+    if 'BB_Upper' in df.columns:
+        plt.plot(recent.index, recent['BB_Upper'], '--', label='Upper Band', color='red', alpha=0.7)
+        plt.plot(recent.index, recent['BB_Lower'], '--', label='Lower Band', color='green', alpha=0.7)
+        plt.fill_between(recent.index, recent['BB_Lower'], recent['BB_Upper'], alpha=0.1, color='blue')
+    plt.legend()
+    plt.title("Bollinger Bands (Last 1 Year)")
+    _save("bollinger_bands.png")
+
+
+# ── 10. RSI ───────────────────────────────────────────────────────────────────
+def plot_rsi(df):
+    if 'RSI' not in df.columns:
+        return
+    recent = df.tail(252)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+    ax1.plot(recent.index, recent['Close'])
+    ax1.set_title("Close Price")
+    ax2.plot(recent.index, recent['RSI'], color='purple')
+    ax2.axhline(70, color='red', linestyle='--', alpha=0.7, label='Overbought (70)')
+    ax2.axhline(30, color='green', linestyle='--', alpha=0.7, label='Oversold (30)')
+    ax2.set_title("RSI (14)")
+    ax2.legend()
+    _save("rsi.png")
+
+
+# ── 11. MACD ──────────────────────────────────────────────────────────────────
+def plot_macd(df):
+    if 'MACD' not in df.columns:
+        return
+    recent = df.tail(252)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+    ax1.plot(recent.index, recent['Close'])
+    ax1.set_title("Close Price")
+    ax2.plot(recent.index, recent['MACD'], label='MACD', color='blue')
+    ax2.plot(recent.index, recent['MACD_Signal'], label='Signal', color='orange')
+    colors = ['green' if v >= 0 else 'red' for v in recent['MACD_Hist']]
+    ax2.bar(recent.index, recent['MACD_Hist'], color=colors, alpha=0.5, label='Histogram')
+    ax2.legend()
+    ax2.set_title("MACD")
+    _save("macd.png")
+
+
+# ── 12. Time series ───────────────────────────────────────────────────────────
 def plot_time_series(df):
-    plt.figure(figsize=(12,6))
-    plt.plot(df.index, df['Close'])
-    plt.title("Time Series Close Price")
-    plt.savefig("outputs/time_series.png")
-    plt.close()
+    plt.figure(figsize=(14, 6))
+    plt.plot(df.index, df['Close'], linewidth=1)
+    plt.title("Netflix Close Price — Full History")
+    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    _save("time_series.png")
 
 
-# --------------------------------------------------
-# 10. 5-YEAR FORECAST
-# --------------------------------------------------
+# ── 13. 5-year ARIMA forecast ─────────────────────────────────────────────────
 def plot_forecast(df):
-    series = df['Close'].resample('ME').mean()
-
-    model = ARIMA(series, order=(5,1,0))
+    series = df['Close'].resample('ME').mean().dropna()
+    model  = ARIMA(series, order=(5, 1, 0))
     fitted = model.fit()
+    fc     = fitted.get_forecast(60)
+    mean   = fc.predicted_mean
+    ci     = fc.conf_int()
 
-    forecast = fitted.forecast(60)
-
-    plt.figure(figsize=(12,6))
+    plt.figure(figsize=(14, 6))
     plt.plot(series, label='Historical')
-    plt.plot(forecast, label='Forecast', linestyle='--')
+    plt.plot(mean, label='Forecast', linestyle='--', color='orange')
+    plt.fill_between(ci.index, ci.iloc[:, 0], ci.iloc[:, 1], alpha=0.2, color='orange', label='95% CI')
     plt.legend()
-    plt.title("5-Year Forecast")
-    plt.savefig("outputs/forecast.png")
-    plt.close()
+    plt.title("5-Year ARIMA Forecast with Confidence Interval")
+    _save("forecast.png")
 
 
-# --------------------------------------------------
-# 11. ML MODEL COMPARISON
-# --------------------------------------------------
-def plot_model_comparison(df):
-    df = df.dropna()
-
-    df['Target'] = df['Close'].shift(-1)
-    df = df.dropna()
-
-    X = df[['Open','High','Low','Close','Volume']]
-    y = df['Target']
-
-    split = int(len(df)*0.8)
-
-    X_train, X_test = X[:split], X[split:]
-    y_train, y_test = y[:split], y[split:]
-
-    model = RandomForestRegressor()
-    model.fit(X_train, y_train)
-
-    preds = model.predict(X_test)
-    rmse = np.sqrt(mean_squared_error(y_test, preds))
-
-    plt.figure()
-    plt.plot(y_test.values, label="Actual")
-    plt.plot(preds, label="Predicted")
+# ── 14. Actual vs Predicted ───────────────────────────────────────────────────
+def plot_predictions(y_test, preds, rmse, r2):
+    plt.figure(figsize=(14, 6))
+    plt.plot(np.array(y_test), label='Actual', linewidth=1.5)
+    plt.plot(preds, label='Predicted', linestyle='--', linewidth=1.5, alpha=0.8)
     plt.legend()
-    plt.title(f"Model Prediction (RMSE={rmse:.2f})")
-    plt.savefig("outputs/model_pred.png")
-    plt.close()
-
-    return model, X_test
+    plt.title(f"Actual vs Predicted  |  RMSE={rmse:.2f}  R²={r2:.4f}")
+    _save("model_pred.png")
 
 
-# --------------------------------------------------
-# 12. FEATURE IMPORTANCE
-# --------------------------------------------------
-def plot_feature_importance(model, X):
-    importances = model.feature_importances_
+# ── 15. Residuals ─────────────────────────────────────────────────────────────
+def plot_residuals(y_test, preds):
+    residuals = np.array(y_test) - preds
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    axes[0].plot(residuals, alpha=0.7)
+    axes[0].axhline(0, color='red', linestyle='--')
+    axes[0].set_title("Residuals over Time")
+    sns.histplot(residuals, bins=60, kde=True, ax=axes[1])
+    axes[1].set_title("Residual Distribution")
+    _save("residuals.png")
 
-    plt.figure()
-    sns.barplot(x=importances, y=X.columns)
-    plt.title("Feature Importance")
-    plt.savefig("outputs/feature_importance.png")
-    plt.close()
+
+# ── 16. Feature importance ────────────────────────────────────────────────────
+def plot_feature_importance(model, feature_names, top_n=20):
+    # VotingRegressor → average importances from RF sub-model
+    try:
+        rf = model.named_steps['model'].estimators_[1]  # RandomForest
+        importances = rf.feature_importances_
+    except Exception:
+        return
+
+    idx = np.argsort(importances)[-top_n:]
+    plt.figure(figsize=(10, 8))
+    sns.barplot(x=importances[idx], y=np.array(feature_names)[idx], orient='h')
+    plt.title(f"Top {top_n} Feature Importances (Random Forest)")
+    _save("feature_importance.png")
 
 
-# --------------------------------------------------
-# MASTER FUNCTION
-# --------------------------------------------------
-def run_all_visualizations(df):
+# ── 17. Walk-forward CV scores ────────────────────────────────────────────────
+def plot_cv_scores(cv_rmse_list, cv_r2_list):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    axes[0].bar(range(1, len(cv_rmse_list) + 1), cv_rmse_list, color='steelblue')
+    axes[0].set_title("Walk-Forward CV — RMSE per Fold")
+    axes[0].set_xlabel("Fold")
+    axes[1].bar(range(1, len(cv_r2_list) + 1), cv_r2_list, color='coral')
+    axes[1].set_title("Walk-Forward CV — R² per Fold")
+    axes[1].set_xlabel("Fold")
+    _save("cv_scores.png")
+
+
+# ── 18. Volatility regime ─────────────────────────────────────────────────────
+def plot_volatility(df):
+    if 'Volatility' not in df.columns:
+        return
+    plt.figure(figsize=(14, 5))
+    plt.plot(df.index, df['Volatility'], color='darkorange', linewidth=1)
+    plt.title("20-Day Rolling Volatility")
+    plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    _save("volatility.png")
+
+
+# ── master ────────────────────────────────────────────────────────────────────
+def run_all_visualizations(df, model=None, y_test=None, preds=None,
+                            rmse=None, r2=None,
+                            cv_rmse_list=None, cv_r2_list=None):
     plot_histograms(df)
     plot_barplots(df)
     plot_boxplots(df)
@@ -216,9 +254,21 @@ def run_all_visualizations(df):
     plot_pairplot(df)
     plot_scatter(df)
     plot_heatmap(df)
-    plot_feature_engineering(df)
+    plot_moving_averages(df)
+    plot_bollinger_bands(df)
+    plot_rsi(df)
+    plot_macd(df)
     plot_time_series(df)
     plot_forecast(df)
+    plot_volatility(df)
 
-    model, X_test = plot_model_comparison(df)
-    plot_feature_importance(model, X_test)
+    if y_test is not None and preds is not None:
+        plot_predictions(y_test, preds, rmse, r2)
+        plot_residuals(y_test, preds)
+
+    if model is not None:
+        from src.modeling import FEATURES
+        plot_feature_importance(model, FEATURES)
+
+    if cv_rmse_list and cv_r2_list:
+        plot_cv_scores(cv_rmse_list, cv_r2_list)
