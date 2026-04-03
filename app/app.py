@@ -8,7 +8,11 @@ import matplotlib.pyplot as plt
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# Resolve repo root regardless of where Streamlit launches from
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+os.chdir(REPO_ROOT)
+sys.path.insert(0, REPO_ROOT)
+
 from src.modeling import FEATURES
 from src.feature_engineering import create_features
 from src.preprocessing import preprocess_data
@@ -25,7 +29,7 @@ st.title("📈 Netflix Stock Prediction App")
 st.caption("Ensemble model (GradientBoosting + RandomForest) with 29 engineered features")
 
 # ── Load model ────────────────────────────────────────────────────────────────
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "model.pkl")
+MODEL_PATH = os.path.join(REPO_ROOT, "models", "model.pkl")
 
 @st.cache_resource
 def load_model():
@@ -257,7 +261,7 @@ with tab_charts:
     st.subheader("Generated Analysis Charts")
     st.caption("Run `python main.py` to regenerate all charts.")
 
-    OUTPUTS = os.path.join(os.path.dirname(__file__), "..", "outputs")
+    OUTPUTS = os.path.join(REPO_ROOT, "outputs")
 
     chart_map = {
         "Moving Averages":       "moving_avg.png",
