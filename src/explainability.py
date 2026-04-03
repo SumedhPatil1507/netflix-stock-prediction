@@ -7,39 +7,38 @@ import numpy as np
 OUT = "outputs"
 
 
-def shap_analysis(pipeline, X, max_samples=500):
+def shap_analysis(model, X, max_samples=300):
     """
-    Run SHAP analysis on the GBR sub-model inside the VotingRegressor pipeline.
-    Saves summary and bar plots to outputs/.
+    SHAP on the XGB base learner inside ManualStackingRegressor.
     """
-    # Scale X the same way the pipeline does
-    scaler = pipeline.named_steps['scaler']
-    X_scaled = scaler.transform(X)
+    xgb_est = None
+    for name, est in model.fitted_learners_:
+        if 'xgb' in name.lower():
+            xgb_est = est
+            break
 
-    # Pull the GradientBoosting estimator from the VotingRegressor
-    gbr = pipeline.named_steps['model'].estimators_[0]
+    if xgb_est is None:
+        print("  SHAP: XGB estimator not found, skipping.")
+        return
 
-    # Subsample for speed
-    n = min(max_samples, len(X_scaled))
-    idx = np.random.choice(len(X_scaled), n, replace=False)
+    # Data is already scaled inside the model; re-scale here for SHAP
+    X_scaled = model.scaler.transform(np.array(X))
+    n        = min(max_samples, len(X_scaled))
+    idx      = np.random.choice(len(X_scaled), n, replace=False)
     X_sample = X_scaled[idx]
 
-    explainer   = shap.TreeExplainer(gbr)
+    explainer   = shap.TreeExplainer(xgb_est)
     shap_values = explainer.shap_values(X_sample)
+    feat_names  = list(X.columns)
 
-    # Summary dot plot
     plt.figure()
-    shap.summary_plot(shap_values, X_sample,
-                      feature_names=list(X.columns),
-                      show=False)
+    shap.summary_plot(shap_values, X_sample, feature_names=feat_names, show=False)
     plt.tight_layout()
     plt.savefig(f"{OUT}/shap_summary.png", dpi=120, bbox_inches='tight')
     plt.close()
 
-    # Bar plot (mean |SHAP|)
     plt.figure()
-    shap.summary_plot(shap_values, X_sample,
-                      feature_names=list(X.columns),
+    shap.summary_plot(shap_values, X_sample, feature_names=feat_names,
                       plot_type='bar', show=False)
     plt.tight_layout()
     plt.savefig(f"{OUT}/shap_bar.png", dpi=120, bbox_inches='tight')

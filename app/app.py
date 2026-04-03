@@ -75,37 +75,58 @@ with tab_pred:
         try:
             df_in = edited.copy().astype(float)
 
-            # ── Compute features ──────────────────────────────────────────────
+            # ── Compute all features (mirrors feature_engineering.py) ─────────
             df_in['Return']    = df_in['Close'].pct_change() * 100
             df_in['LogReturn'] = np.log(df_in['Close'] / df_in['Close'].shift(1))
             df_in['RangePct']  = (df_in['High'] - df_in['Low']) / df_in['Close'].shift(1) * 100
 
-            for lag in [1, 2, 3, 5, 10]:
+            for lag in [1, 2, 3, 5, 10, 20]:
                 df_in[f'Lag{lag}'] = df_in['Close'].shift(lag)
+            for lag in [1, 2, 3, 5]:
+                df_in[f'RetLag{lag}'] = df_in['Return'].shift(lag)
 
-            for w in [7, 21]:
+            for w in [5, 7, 10, 21, 50, 200]:
                 df_in[f'MA{w}'] = df_in['Close'].rolling(w, min_periods=1).mean()
+
+            df_in['EMA9']      = df_in['Close'].ewm(span=9,  adjust=False).mean()
+            df_in['EMA21']     = df_in['Close'].ewm(span=21, adjust=False).mean()
+            df_in['EMA_Cross'] = df_in['EMA9'] - df_in['EMA21']
 
             df_in['RollingMean_5']  = df_in['Close'].rolling(5, min_periods=1).mean()
             df_in['RollingMean_10'] = df_in['Close'].rolling(10, min_periods=1).mean()
             df_in['RollingStd_5']   = df_in['Close'].rolling(5, min_periods=1).std().fillna(0)
             df_in['RollingStd_10']  = df_in['Close'].rolling(10, min_periods=1).std().fillna(0)
-            df_in['Volatility']     = df_in['Return'].rolling(10, min_periods=1).std().fillna(0)
+            df_in['Volatility']     = df_in['Return'].rolling(20, min_periods=1).std().fillna(0)
+            df_in['Volatility_5']   = df_in['Return'].rolling(5,  min_periods=1).std().fillna(0)
 
-            df_in['Volume_MA10']  = df_in['Volume'].rolling(10, min_periods=1).mean()
-            df_in['Volume_Ratio'] = df_in['Volume'] / df_in['Volume_MA10'].replace(0, np.nan)
+            for col in ['MA5','MA10','MA21','MA50','MA200']:
+                key = f'Price_vs_{col}'
+                df_in[key] = df_in['Close'] / df_in[col].replace(0, np.nan) - 1
 
-            delta = df_in['Close'].diff()
-            gain  = delta.clip(lower=0).rolling(14, min_periods=1).mean()
-            loss  = (-delta.clip(upper=0)).rolling(14, min_periods=1).mean()
-            rs    = gain / loss.replace(0, np.nan)
-            df_in['RSI'] = (100 - (100 / (1 + rs))).fillna(50)
+            df_in['Volume_MA10']    = df_in['Volume'].rolling(10, min_periods=1).mean()
+            df_in['Volume_MA20']    = df_in['Volume'].rolling(20, min_periods=1).mean()
+            df_in['Volume_Ratio']   = df_in['Volume'] / df_in['Volume_MA10'].replace(0, np.nan)
+            df_in['Volume_Ratio20'] = df_in['Volume'] / df_in['Volume_MA20'].replace(0, np.nan)
+
+            obv = (np.sign(df_in['Close'].diff()) * df_in['Volume']).fillna(0).cumsum()
+            df_in['OBV']       = obv
+            df_in['OBV_MA10']  = df_in['OBV'].rolling(10, min_periods=1).mean()
+            df_in['OBV_Ratio'] = df_in['OBV'] / df_in['OBV_MA10'].replace(0, np.nan)
+
+            for period in [7, 14]:
+                delta = df_in['Close'].diff()
+                gain  = delta.clip(lower=0).rolling(period, min_periods=1).mean()
+                loss  = (-delta.clip(upper=0)).rolling(period, min_periods=1).mean()
+                rs    = gain / loss.replace(0, np.nan)
+                df_in[f'RSI{period}'] = (100 - (100 / (1 + rs))).fillna(50)
+            df_in['RSI'] = df_in['RSI14']
 
             ema12 = df_in['Close'].ewm(span=12, adjust=False).mean()
             ema26 = df_in['Close'].ewm(span=26, adjust=False).mean()
             df_in['MACD']        = ema12 - ema26
             df_in['MACD_Signal'] = df_in['MACD'].ewm(span=9, adjust=False).mean()
             df_in['MACD_Hist']   = df_in['MACD'] - df_in['MACD_Signal']
+            df_in['MACD_Norm']   = df_in['MACD'] / df_in['Close'].replace(0, np.nan)
 
             bb_mid         = df_in['Close'].rolling(20, min_periods=1).mean()
             bb_std         = df_in['Close'].rolling(20, min_periods=1).std().fillna(0)
@@ -119,20 +140,38 @@ with tab_pred:
             hc  = (df_in['High'] - df_in['Close'].shift(1)).abs()
             lc  = (df_in['Low']  - df_in['Close'].shift(1)).abs()
             tr  = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-            df_in['ATR'] = tr.rolling(14, min_periods=1).mean()
+            df_in['ATR']      = tr.rolling(14, min_periods=1).mean()
+            df_in['ATR_Norm'] = df_in['ATR'] / df_in['Close'].replace(0, np.nan)
 
-            df_in['Range']          = df_in['High'] - df_in['Low']
-            df_in['Price_vs_MA50']  = df_in['Close'] / df_in['Close'].rolling(50, min_periods=1).mean() - 1
-            df_in['Price_vs_MA200'] = df_in['Close'] / df_in['Close'].rolling(200, min_periods=1).mean() - 1
-            df_in['DayOfWeek']      = 2
-            df_in['Month']          = pd.Timestamp.now().month
+            low14  = df_in['Low'].rolling(14, min_periods=1).min()
+            high14 = df_in['High'].rolling(14, min_periods=1).max()
+            rng14  = (high14 - low14).replace(0, np.nan)
+            df_in['Stoch_K']   = 100 * (df_in['Close'] - low14) / rng14
+            df_in['Stoch_D']   = df_in['Stoch_K'].rolling(3, min_periods=1).mean()
+            df_in['Williams_R']= -100 * (high14 - df_in['Close']) / rng14
 
-            df_in = df_in.fillna(method='bfill').fillna(0)
+            tp     = (df_in['High'] + df_in['Low'] + df_in['Close']) / 3
+            tp_ma  = tp.rolling(20, min_periods=1).mean()
+            tp_std = tp.rolling(20, min_periods=1).std().replace(0, np.nan)
+            df_in['CCI'] = (tp - tp_ma) / (0.015 * tp_std)
 
-            row  = df_in[FEATURES].iloc[[-1]]
-            pred = model.predict(row)[0]
-            last = df_in['Close'].iloc[-1]
-            ret  = (pred - last) / last * 100
+            df_in['Range']      = df_in['High'] - df_in['Low']
+            df_in['Range_Norm'] = df_in['Range'] / df_in['Close'].replace(0, np.nan)
+            df_in['Momentum5']  = df_in['Close'] / df_in['Close'].shift(5).replace(0, np.nan)  - 1
+            df_in['Momentum10'] = df_in['Close'] / df_in['Close'].shift(10).replace(0, np.nan) - 1
+            df_in['Momentum20'] = df_in['Close'] / df_in['Close'].shift(20).replace(0, np.nan) - 1
+
+            df_in['DayOfWeek'] = 2
+            df_in['Month']     = pd.Timestamp.now().month
+            df_in['Quarter']   = (pd.Timestamp.now().month - 1) // 3 + 1
+
+            df_in = df_in.ffill().fillna(0)
+
+            row         = df_in[FEATURES].iloc[[-1]]
+            pred_return = model.predict(row)[0]   # model predicts next-day return (%)
+            last        = df_in['Close'].iloc[-1]
+            pred        = last * (1 + pred_return / 100)
+            ret         = pred_return
 
             # ── Results ───────────────────────────────────────────────────────
             c1, c2, c3 = st.columns(3)

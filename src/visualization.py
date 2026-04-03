@@ -206,30 +206,19 @@ def plot_residuals(y_test, preds):
 
 # ── 16. Feature importance ────────────────────────────────────────────────────
 def plot_feature_importance(model, feature_names, top_n=20):
-    # VotingRegressor → average importances from RF sub-model
+    """Works with ManualStackingRegressor — averages importances from tree base models."""
     try:
-        rf = model.named_steps['model'].estimators_[1]  # RandomForest
-        importances = rf.feature_importances_
+        importances = model.feature_importances_
+        if importances is None:
+            return
+        importances = importances[:len(feature_names)]
+        idx = np.argsort(importances)[-top_n:]
+        plt.figure(figsize=(10, 8))
+        sns.barplot(x=importances[idx], y=np.array(feature_names)[idx], orient='h')
+        plt.title(f"Top {top_n} Feature Importances (avg of tree models)")
+        _save("feature_importance.png")
     except Exception:
-        return
-
-    idx = np.argsort(importances)[-top_n:]
-    plt.figure(figsize=(10, 8))
-    sns.barplot(x=importances[idx], y=np.array(feature_names)[idx], orient='h')
-    plt.title(f"Top {top_n} Feature Importances (Random Forest)")
-    _save("feature_importance.png")
-
-
-# ── 17. Walk-forward CV scores ────────────────────────────────────────────────
-def plot_cv_scores(cv_rmse_list, cv_r2_list):
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    axes[0].bar(range(1, len(cv_rmse_list) + 1), cv_rmse_list, color='steelblue')
-    axes[0].set_title("Walk-Forward CV — RMSE per Fold")
-    axes[0].set_xlabel("Fold")
-    axes[1].bar(range(1, len(cv_r2_list) + 1), cv_r2_list, color='coral')
-    axes[1].set_title("Walk-Forward CV — R² per Fold")
-    axes[1].set_xlabel("Fold")
-    _save("cv_scores.png")
+        pass
 
 
 # ── 18. Volatility regime ─────────────────────────────────────────────────────
@@ -245,8 +234,7 @@ def plot_volatility(df):
 
 # ── master ────────────────────────────────────────────────────────────────────
 def run_all_visualizations(df, model=None, y_test=None, preds=None,
-                            rmse=None, r2=None,
-                            cv_rmse_list=None, cv_r2_list=None):
+                            rmse=None, r2=None):
     plot_histograms(df)
     plot_barplots(df)
     plot_boxplots(df)
@@ -269,6 +257,3 @@ def run_all_visualizations(df, model=None, y_test=None, preds=None,
     if model is not None:
         from src.modeling import FEATURES
         plot_feature_importance(model, FEATURES)
-
-    if cv_rmse_list and cv_r2_list:
-        plot_cv_scores(cv_rmse_list, cv_r2_list)
