@@ -26,7 +26,7 @@ st.set_page_config(
 )
 
 st.title("📈 Netflix Stock Prediction App")
-st.caption("Ensemble model (GradientBoosting + RandomForest) with 29 engineered features")
+st.caption("Stacking ensemble (XGB + LGBM + RF + ET → Ridge) · 49 features · Walk-forward CV")
 
 # ── Load model ────────────────────────────────────────────────────────────────
 MODEL_PATH = os.path.join(REPO_ROOT, "models", "model.pkl")
@@ -36,8 +36,8 @@ def load_model():
     return joblib.load(MODEL_PATH)
 
 @st.cache_data
-def get_data():
-    df = load_data()
+def get_data(source="csv"):
+    df = load_data(source=source)
     df = preprocess_data(df)
     df = create_features(df)
     return df
@@ -48,9 +48,21 @@ except Exception as e:
     st.error(f"Model not found. Run `python main.py` first to train and save the model.\n\n{e}")
     st.stop()
 
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.header("Settings")
+    data_source = st.radio("Data source", ["csv", "live (yfinance)"],
+                           help="'live' fetches latest NFLX data from Yahoo Finance")
+    source_key = "live" if "live" in data_source else "csv"
+    st.caption("Live data requires internet access.")
+    st.markdown("---")
+    st.markdown("**Model:** XGB + LGBM + RF + ET → Ridge")
+    st.markdown("**Features:** 49 technical indicators")
+    st.markdown("**Target:** Next-day return (%)")
+
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_pred, tab_eda, tab_charts, tab_about = st.tabs(
-    ["🔮 Predict", "📊 EDA", "📉 Charts", "ℹ️ About"]
+tab_pred, tab_eda, tab_charts, tab_backtest, tab_about = st.tabs(
+    ["🔮 Predict", "📊 EDA", "📉 Charts", "📈 Backtest", "ℹ️ About"]
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -204,7 +216,7 @@ with tab_eda:
     st.subheader("Exploratory Data Analysis")
 
     try:
-        df = get_data()
+        df = get_data(source_key)
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total Rows",  f"{len(df):,}")
@@ -261,7 +273,7 @@ with tab_charts:
     st.subheader("Interactive Technical Analysis Charts")
 
     try:
-        df = get_data()
+        df = get_data(source_key)
 
         chart_choice = st.selectbox("Select chart", [
             "Price + Moving Averages",
@@ -408,7 +420,55 @@ with tab_charts:
         st.exception(e)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — ABOUT
+# TAB 4 — BACKTEST
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_backtest:
+    st.subheader("Strategy Backtesting")
+    st.caption("Simulates: go long when model predicts positive return, flat otherwise. Includes transaction costs.")
+
+    bt_path = os.path.join(REPO_ROOT, "outputs", "backtest_curves.csv")
+    metrics_path = os.path.join(REPO_ROOT, "outputs", "metrics.json")
+
+    if os.path.exists(bt_path):
+        curves = pd.read_csv(bt_path, index_col=0)
+
+        # ── Equity curve ──────────────────────────────────────────────────────
+        fig, ax = plt.subplots(figsize=(12, 5))
+        ax.plot(curves.index, curves["Strategy"],   label="Model Strategy", linewidth=1.5)
+        ax.plot(curves.index, curves["BuyAndHold"], label="Buy & Hold",     linewidth=1.5, linestyle="--")
+        ax.axhline(1.0, color="gray", linestyle=":", alpha=0.5)
+        ax.set_title("Strategy vs Buy & Hold — Equity Curve")
+        ax.set_ylabel("Portfolio Value (starting = 1.0)")
+        ax.legend()
+        st.pyplot(fig); plt.close()
+
+        # ── Metrics ───────────────────────────────────────────────────────────
+        if os.path.exists(metrics_path):
+            import json
+            with open(metrics_path) as f:
+                ml_metrics = json.load(f)
+
+            st.markdown("#### ML Model Metrics")
+            mc = st.columns(len(ml_metrics))
+            for col, (k, v) in zip(mc, ml_metrics.items()):
+                col.metric(k, f"{v:.4f}")
+
+        st.markdown("#### Trading Strategy Metrics")
+        st.caption("Run `python main.py` to generate backtest results.")
+
+    else:
+        st.info("No backtest data found. Run `python main.py` to generate it.")
+        st.markdown("""
+        **What the backtest does:**
+        - Uses model predictions on the held-out test set (last 20% of data)
+        - Goes **long** when predicted return > 0%, stays **flat** otherwise
+        - Applies 0.1% transaction cost per trade
+        - Compares against simple buy-and-hold benchmark
+        - Reports: Total Return, Annualised Return, Sharpe Ratio, Sortino Ratio, Max Drawdown
+        """)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — ABOUT
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_about:
     st.markdown("""
@@ -421,10 +481,13 @@ Predicts the **next-day return (%)** of Netflix stock using a manual stacking en
 **Target:** Next-day return (%) — stationary, no price-level bias  
 **Features (49 total):** Lag prices/returns, RSI (7 & 14), MACD, Bollinger Bands, ATR, Stochastic %K/%D, Williams %R, CCI, OBV, EMA crossover, momentum ratios, price vs MAs, volatility, calendar
 
-**Key metric to watch:** Directional Accuracy (`Dir_Acc`) — % of days the model correctly predicts up/down. Above 52% is meaningful signal.
+**Key metric:** Directional Accuracy (`Dir_Acc`) — % of days the model correctly predicts up/down. Above 52% is meaningful signal.
 
-**Data:** Netflix historical OHLCV — May 2002 to present (~5,900 trading days)
+**Data:** Netflix historical OHLCV — May 2002 to present (~5,900 trading days)  
+**Live data:** Toggle "live (yfinance)" in the sidebar to fetch latest NFLX data from Yahoo Finance.
 
+**API:** Run `uvicorn api.main:app --reload` for a REST prediction endpoint at `/predict`  
+**Tests:** Run `pytest tests/` to execute unit tests  
 **Source code:** [GitHub — SumedhPatil1507/netflix-stock-prediction](https://github.com/SumedhPatil1507/netflix-stock-prediction)
 
 ---
