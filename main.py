@@ -34,7 +34,7 @@ def main(source: str = "csv"):
     logger.info(f"Features: {len(FEATURES)} | Rows: {len(df):,}")
 
     # ── Model training ────────────────────────────────────────────────────────
-    logger.info("Training stacking ensemble (XGB + LGBM + RF + ET → Ridge)...")
+    logger.info("Training stacking ensemble (XGB + LGBM + RF + ET -> Ridge)...")
     model, results, X_test, y_test, preds = train_model(df)
 
     logger.info("Model results:")

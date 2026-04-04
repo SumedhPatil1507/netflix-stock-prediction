@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import logging
 import csv
@@ -20,7 +21,7 @@ def save_metrics(metrics: dict):
     path = os.path.join(OUTPUT_DIR, "metrics.json")
     with open(path, "w") as f:
         json.dump(metrics, f, indent=4)
-    logger.info(f"Metrics saved → {path}")
+    logger.info(f"Metrics saved -> {path}")
 
 
 def log_experiment(params: dict, metrics: dict):
@@ -36,18 +37,28 @@ def log_experiment(params: dict, metrics: dict):
         if not file_exists:
             writer.writeheader()
         writer.writerow(row)
-    logger.info(f"Experiment logged → {EXPERIMENT_LOG}")
+    logger.info(f"Experiment logged -> {EXPERIMENT_LOG}")
 
 
 def setup_logging(level: str = "INFO"):
     os.makedirs("logs", exist_ok=True)
     log_file = os.path.join("logs", f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+
+    fmt = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+
+    # File handler always UTF-8
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter(fmt))
+
+    # Stream handler forced to UTF-8 on Windows
+    import io
+    stream = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace") \
+        if hasattr(sys.stdout, "buffer") else sys.stdout
+    stream_handler = logging.StreamHandler(stream)
+    stream_handler.setFormatter(logging.Formatter(fmt))
+
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(log_file),
-        ],
+        handlers=[stream_handler, file_handler],
     )
     return logging.getLogger("netflix")
