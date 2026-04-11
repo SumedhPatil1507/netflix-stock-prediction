@@ -1,3 +1,4 @@
+import os
 import argparse
 from src.utils import setup_logging, create_output_folder, save_metrics, log_experiment
 from src.pipeline_config import load_config, save_default_config
@@ -58,6 +59,11 @@ def main(source: str = "csv", config_path: str = "config.yaml"):
     # ── Save ──────────────────────────────────────────────────────────────────
     save_model(model)
     save_metrics(results)
+
+    # ── Cache features for fast Streamlit load ────────────────────────────────
+    cache_path = os.path.join("outputs", "features_cache.parquet")
+    df.to_parquet(cache_path)
+    logger.info(f"Feature cache saved -> {cache_path}")
     log_experiment(
         params={"source": source, "n_features": len(active_features),
                 "n_rows": len(df), "model": "ManualStacking(XGB+LGBM+RF+ET->Ridge)",

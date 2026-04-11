@@ -23,7 +23,7 @@ st.set_page_config(
 )
 
 st.title("📈 Netflix Stock Prediction App")
-st.caption("Stacking ensemble (XGB + LGBM + RF + ET → Ridge) · 49 features · Walk-forward CV")
+st.caption("Stacking ensemble (XGB + LGBM + RF + ET → Ridge) · 51 features · Walk-forward CV · Conformal Intervals")
 
 # ── Load model ────────────────────────────────────────────────────────────────
 MODEL_PATH  = os.path.join(REPO_ROOT, "models", "model.pkl")
@@ -54,6 +54,9 @@ except Exception as e:
     st.stop()
 
 FEATURES = get_active_features(get_data())
+# Always use the model's own feature list if available (prevents version mismatch)
+if hasattr(model, 'feature_names_'):
+    FEATURES = model.feature_names_
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -68,8 +71,8 @@ with st.sidebar:
     st.markdown("**Target:** Next-day return (%)")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_pred, tab_eda, tab_charts, tab_backtest, tab_about = st.tabs(
-    ["🔮 Predict", "📊 EDA", "📉 Charts", "📈 Backtest", "ℹ️ About"]
+tab_pred, tab_eda, tab_charts, tab_backtest, tab_drift, tab_about = st.tabs(
+    ["🔮 Predict", "📊 EDA", "📉 Charts", "📈 Backtest", "🔬 Drift Monitor", "ℹ️ About"]
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -514,7 +517,63 @@ with tab_backtest:
         """)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 5 — ABOUT
+# TAB 5 — DRIFT MONITOR
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_drift:
+    st.subheader("Model Drift Monitor")
+    st.caption("Compares recent data distribution against training data using PSI and KS test.")
+
+    try:
+        df_full = get_data(source_key)
+        split   = int(len(df_full) * 0.8)
+        df_train = df_full.iloc[:split]
+        df_recent = df_full.iloc[split:]
+
+        from src.drift import detect_drift, drift_summary_df
+        drift_result = detect_drift(df_train, df_recent, FEATURES)
+        drift_df     = drift_summary_df(drift_result)
+
+        # ── Summary banner ────────────────────────────────────────────────────
+        n_drifted = len(drift_result["drifted_features"])
+        if drift_result["overall_drift"]:
+            st.error(f"Significant drift detected in {n_drifted} features — consider retraining.")
+        elif n_drifted > 0:
+            st.warning(f"Moderate drift in {n_drifted} features — monitor closely.")
+        else:
+            st.success("No significant drift detected. Model is stable.")
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Features Checked", len(drift_df))
+        c2.metric("Drifted Features", n_drifted)
+        c3.metric("PSI Threshold", drift_result["psi_threshold"])
+
+        # ── PSI bar chart ─────────────────────────────────────────────────────
+        top20 = drift_df.head(20)
+        fig, ax = plt.subplots(figsize=(10, 6))
+        colors = ["red" if d else "steelblue" for d in top20["Drifted"]]
+        ax.barh(top20["Feature"], top20["PSI"], color=colors)
+        ax.axvline(0.1, color="orange", linestyle="--", alpha=0.7, label="Moderate (0.1)")
+        ax.axvline(0.2, color="red",    linestyle="--", alpha=0.7, label="Significant (0.2)")
+        ax.set_title("Top 20 Features by PSI (Population Stability Index)")
+        ax.legend()
+        st.pyplot(fig); plt.close()
+
+        # ── Full table ────────────────────────────────────────────────────────
+        st.markdown("#### Full Drift Report")
+        st.dataframe(
+            drift_df.style.applymap(
+                lambda v: "background-color: #ffcccc" if v is True else "",
+                subset=["Drifted"]
+            ),
+            use_container_width=True,
+        )
+
+    except Exception as e:
+        st.warning(f"Drift monitor unavailable: {e}")
+        st.info("Install scipy: `pip install scipy`")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 6 — ABOUT
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_about:
     st.markdown("""
@@ -525,17 +584,21 @@ Predicts the **next-day return (%)** of Netflix stock using a manual stacking en
 **Model:** Manual Stacking — XGBoost + LightGBM + RandomForest + ExtraTrees → Ridge meta-learner  
 **Validation:** 5-fold walk-forward (time-series) cross-validation  
 **Target:** Next-day return (%) — stationary, no price-level bias  
-**Features (49 total):** Lag prices/returns, RSI (7 & 14), MACD, Bollinger Bands, ATR, Stochastic %K/%D, Williams %R, CCI, OBV, EMA crossover, momentum ratios, price vs MAs, volatility, calendar
+**Features (51 total):** Lag prices/returns, RSI (7 & 14), MACD, Bollinger Bands, ATR, Stochastic %K/%D, Williams %R, CCI, OBV, EMA crossover, momentum ratios, price vs MAs, volatility, regime probabilities, earnings flag
 
-**Key metric:** Directional Accuracy (`Dir_Acc`) — % of days the model correctly predicts up/down. Above 52% is meaningful signal.
+**Conformal Prediction:** 90% calibrated prediction intervals — not just a point estimate  
+**Drift Monitor:** PSI + KS test on all features to detect distribution shift  
+**Sentiment:** VADER-scored news headlines via yfinance (local dev)  
+**Backtesting:** Kelly criterion sizing, Sharpe/Sortino/Calmar, rolling Sharpe  
+**Hyperparameter Tuning:** Optuna (run `python -m src.tuning` locally)
 
-**Data:** Netflix historical OHLCV — May 2002 to present (~5,900 trading days)  
-**Live data:** Toggle "live (yfinance)" in the sidebar to fetch latest NFLX data from Yahoo Finance.
+**Key metric:** Directional Accuracy (`Dir_Acc`) — above 52% is meaningful signal.
 
-**API:** Run `uvicorn api.main:app --reload` for a REST prediction endpoint at `/predict`  
-**Tests:** Run `pytest tests/` to execute unit tests  
-**Source code:** [GitHub — SumedhPatil1507/netflix-stock-prediction](https://github.com/SumedhPatil1507/netflix-stock-prediction)
+**Data:** Netflix historical OHLCV — May 2002 to present  
+**API:** `uvicorn api.main:app --reload` → Swagger at `http://localhost:8000/docs`  
+**Tests:** `pytest tests/ -v`  
+**Source:** [GitHub — SumedhPatil1507/netflix-stock-prediction](https://github.com/SumedhPatil1507/netflix-stock-prediction)
 
 ---
-> ⚠️ This is a research/learning project. Do not use for real trading decisions.
+> This is a research/learning project. Do not use for real trading decisions.
     """)
