@@ -198,11 +198,21 @@ with tab_pred:
 
             df_in = df_in.ffill().fillna(0)
 
-            # Only use features the model knows about AND that exist in df_in
-            available   = [f for f in FEATURES if f in df_in.columns]
-            row         = df_in[available].iloc[[-1]]
+            # Use exact features the model was trained on (stored in model.feature_names_)
+            # Fall back to filtering FEATURES against what's available in df_in
+            if hasattr(model, 'feature_names_'):
+                train_features = model.feature_names_
+                available = [f for f in train_features if f in df_in.columns]
+                # Fill any missing training features with 0
+                for f in train_features:
+                    if f not in df_in.columns:
+                        df_in[f] = 0.0
+                row = df_in[train_features].iloc[[-1]]
+            else:
+                available = [f for f in FEATURES if f in df_in.columns]
+                row = df_in[available].iloc[[-1]]
             last        = df_in['Close'].iloc[-1]
-            pred_return = model.predict(row)[0]   # model predicts next-day return (%)
+            pred_return = model.predict(row)[0]
             pred        = last * (1 + pred_return / 100)
             ret         = pred_return
 

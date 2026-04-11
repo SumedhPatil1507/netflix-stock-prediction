@@ -206,7 +206,8 @@ def train_model(df, cfg=None):
     # Refit on full train for final predictions
     final_model_full = _build_model(cfg)
     final_model_full.fit(X_train, y_tr_ret)
-    final_model_full.conformal_ = cp   # attach for later use
+    final_model_full.conformal_     = cp
+    final_model_full.feature_names_ = list(X_train.columns)  # exact features used at train time
 
     pred_returns = final_model_full.predict(X_test)
     pred_prices  = curr_test.values * (1 + pred_returns / 100)
