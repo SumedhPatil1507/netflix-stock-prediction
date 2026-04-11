@@ -13,10 +13,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 os.chdir(REPO_ROOT)
 sys.path.insert(0, REPO_ROOT)
 
-from src.modeling import FEATURES
-from src.feature_engineering import create_features
-from src.preprocessing import preprocess_data
-from src.data_loader import load_data
+from src.modeling import get_active_features
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -29,14 +26,22 @@ st.title("📈 Netflix Stock Prediction App")
 st.caption("Stacking ensemble (XGB + LGBM + RF + ET → Ridge) · 49 features · Walk-forward CV")
 
 # ── Load model ────────────────────────────────────────────────────────────────
-MODEL_PATH = os.path.join(REPO_ROOT, "models", "model.pkl")
+MODEL_PATH  = os.path.join(REPO_ROOT, "models", "model.pkl")
+CACHE_PATH  = os.path.join(REPO_ROOT, "outputs", "features_cache.parquet")
 
-@st.cache_resource
+@st.cache_resource(show_spinner="Loading model...")
 def load_model():
     return joblib.load(MODEL_PATH)
 
-@st.cache_data
+@st.cache_data(show_spinner="Loading data...")
 def get_data(source="csv"):
+    # Fast path: use pre-computed parquet cache if available and source is csv
+    if source == "csv" and os.path.exists(CACHE_PATH):
+        return pd.read_parquet(CACHE_PATH)
+    # Slow path: compute features from scratch
+    from src.data_loader import load_data
+    from src.preprocessing import preprocess_data
+    from src.feature_engineering import create_features
     df = load_data(source=source)
     df = preprocess_data(df)
     df = create_features(df)
@@ -45,8 +50,10 @@ def get_data(source="csv"):
 try:
     model = load_model()
 except Exception as e:
-    st.error(f"Model not found. Run `python main.py` first to train and save the model.\n\n{e}")
+    st.error(f"Model not found. Run `python main.py` first.\n\n{e}")
     st.stop()
+
+FEATURES = get_active_features(get_data())
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -180,12 +187,22 @@ with tab_pred:
             df_in['DayOfWeek'] = 2
             df_in['Month']     = pd.Timestamp.now().month
             df_in['Quarter']   = (pd.Timestamp.now().month - 1) // 3 + 1
+            df_in['EarningsMonth'] = int(pd.Timestamp.now().month in [1, 4, 7, 10])
+            df_in['VolRatio_5_20'] = df_in['Volatility_5'] / df_in['Volatility'].replace(0, np.nan)
+
+            # Regime features — default to Sideways (1) if not available
+            df_in['Regime']      = 1
+            df_in['Regime_Bear'] = 0.0
+            df_in['Regime_Side'] = 1.0
+            df_in['Regime_Bull'] = 0.0
 
             df_in = df_in.ffill().fillna(0)
 
-            row         = df_in[FEATURES].iloc[[-1]]
-            pred_return = model.predict(row)[0]   # model predicts next-day return (%)
+            # Only use features the model knows about AND that exist in df_in
+            available   = [f for f in FEATURES if f in df_in.columns]
+            row         = df_in[available].iloc[[-1]]
             last        = df_in['Close'].iloc[-1]
+            pred_return = model.predict(row)[0]   # model predicts next-day return (%)
             pred        = last * (1 + pred_return / 100)
             ret         = pred_return
 
