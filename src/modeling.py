@@ -104,6 +104,8 @@ class ManualStackingRegressor:
         self.fitted_learners_ = []
 
     def fit(self, X, y):
+        if hasattr(X, 'columns'):
+            self.feature_names_ = list(X.columns)
         X = np.array(X)
         y = np.array(y)
         X_scaled = self.scaler.fit_transform(X)
@@ -127,6 +129,14 @@ class ManualStackingRegressor:
         return self
 
     def predict(self, X):
+        # If model knows its training features, select/reorder to match exactly
+        if hasattr(self, 'feature_names_') and hasattr(X, 'columns'):
+            # Add any missing columns as 0, drop any extra columns
+            for col in self.feature_names_:
+                if col not in X.columns:
+                    X = X.copy()
+                    X[col] = 0.0
+            X = X[self.feature_names_]
         X_scaled = self.scaler.transform(np.array(X))
         preds    = np.column_stack([
             est.predict(X_scaled) for _, est in self.fitted_learners_

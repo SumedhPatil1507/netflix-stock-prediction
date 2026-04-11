@@ -202,15 +202,15 @@ with tab_pred:
             # Fall back to filtering FEATURES against what's available in df_in
             if hasattr(model, 'feature_names_'):
                 train_features = model.feature_names_
-                available = [f for f in train_features if f in df_in.columns]
-                # Fill any missing training features with 0
-                for f in train_features:
-                    if f not in df_in.columns:
-                        df_in[f] = 0.0
-                row = df_in[train_features].iloc[[-1]]
             else:
-                available = [f for f in FEATURES if f in df_in.columns]
-                row = df_in[available].iloc[[-1]]
+                train_features = FEATURES
+
+            # Ensure all training features exist in df_in (fill missing with 0)
+            for f in train_features:
+                if f not in df_in.columns:
+                    df_in[f] = 0.0
+
+            row         = df_in[train_features].iloc[[-1]]   # DataFrame, keeps column names
             last        = df_in['Close'].iloc[-1]
             pred_return = model.predict(row)[0]
             pred        = last * (1 + pred_return / 100)
@@ -226,7 +226,7 @@ with tab_pred:
             # ── Conformal interval ────────────────────────────────────────────
             if hasattr(model, 'conformal_'):
                 cp = model.conformal_
-                lo_r, hi_r = cp.predict_interval(row.values)
+                lo_r, hi_r = cp.predict_interval(row)
                 lo_p = last * (1 + lo_r[0] / 100)
                 hi_p = last * (1 + hi_r[0] / 100)
                 st.info(f"90% Prediction Interval: **${lo_p:.2f}** to **${hi_p:.2f}**  "

@@ -45,9 +45,7 @@ class ConformalPredictor:
         return self
 
     def predict_interval(self, X) -> tuple:
-        """
-        Returns (lower, upper) arrays for each sample in X.
-        """
+        """Returns (lower, upper) arrays for each sample in X."""
         if self._model is None or self._quantile is None:
             raise RuntimeError("Call calibrate() first.")
         preds = self._model.predict(X)
