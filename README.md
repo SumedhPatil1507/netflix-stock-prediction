@@ -1,130 +1,122 @@
-# 📈 Netflix Stock Prediction
+# Netflix Stock Prediction
 
-## Overview
-End-to-end ML pipeline that predicts the **next-day closing price** of Netflix stock using historical OHLCV data. Includes data preprocessing, advanced feature engineering, ensemble modeling, SHAP explainability, and a Streamlit web app.
+End-to-end ML pipeline predicting next-day Netflix stock returns using a stacking ensemble, HMM regime detection, conformal prediction intervals, and a full backtesting engine.
 
 **Live App:** [Launch on Streamlit](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)
 
 ---
 
-## Problem Statement
-Predict the next-day closing price of Netflix stock from historical price and volume data, without data leakage.
+## What makes this research-grade
+
+- **HMM Regime Detection** — Gaussian Hidden Markov Model identifies Bull/Bear/Sideways market states. Regime posterior probabilities fed as features to the model
+- **Conformal Prediction** — calibrated 90% prediction intervals with coverage guarantees (not just point estimates)
+- **Manual Stacking Ensemble** — XGBoost + LightGBM + RandomForest + ExtraTrees → Ridge meta-learner via OOF
+- **Advanced Backtesting** — Kelly-sized positions, Sharpe/Sortino/Calmar ratios, rolling Sharpe, transaction costs
+- **YAML Config** — all hyperparameters in `config.yaml`, no hardcoded values
+- **FastAPI endpoint** — `/predict` REST API for production serving
+- **GitHub Actions CI** — pytest runs on every push
+- **SHAP explainability** — feature-level contribution for every prediction
 
 ---
 
-## Dataset
-- Source: Historical Netflix stock data (yFinance / CSV)
-- Columns: Date, Open, High, Low, Close, Volume, Stock Splits
-- Time Period: May 2002 – present (~5,900+ trading days)
+## Project Structure
+
+```
+netflix-stock-project/
+├── src/
+│   ├── data_loader.py          # CSV + live yfinance loader
+│   ├── preprocessing.py
+│   ├── feature_engineering.py  # 51 technical features
+│   ├── regime_detection.py     # HMM Bull/Bear/Sideways
+│   ├── modeling.py             # ManualStackingRegressor + conformal
+│   ├── uncertainty.py          # Conformal prediction intervals
+│   ├── backtest.py             # Kelly sizing, Sharpe, Sortino, Calmar
+│   ├── explainability.py       # SHAP via XGB sub-model
+│   ├── pipeline_config.py      # YAML-driven config dataclasses
+│   ├── visualization.py        # 14 plot types
+│   ├── forecasting.py          # ARIMA with CI
+│   └── utils.py                # Logging, experiment log CSV
+├── api/
+│   └── main.py                 # FastAPI /predict /health /features
+├── app/
+│   └── app.py                  # Streamlit (Predict, EDA, Charts, Backtest, About)
+├── tests/
+│   ├── test_features.py        # 12 unit tests
+│   └── test_regime_uncertainty.py  # 5 unit tests
+├── notebooks/
+│   └── analysis.ipynb          # Full storytelling notebook
+├── .github/workflows/test.yml  # CI: pytest on push
+├── .pre-commit-config.yaml     # black + isort + flake8
+├── config.yaml                 # Hyperparameter overrides
+├── main.py                     # Pipeline runner
+└── requirements.txt
+```
 
 ---
 
 ## Pipeline
 
-### 1. Data Loading & Preprocessing
-- Tab-separated CSV ingestion
-- Date parsing, deduplication, chronological sorting
-
-### 2. Feature Engineering (29 features)
+### Features (51 total)
 | Category | Features |
 |---|---|
-| Lag prices | Lag1, Lag2, Lag3, Lag5, Lag10 |
-| Rolling stats | RollingMean_5/10, RollingStd_5/10 |
-| Returns | Return (%), LogReturn, Volatility (20d) |
-| Volume | Volume, Volume_Ratio |
-| Momentum | RSI (14), MACD, MACD_Signal, MACD_Hist |
-| Volatility bands | BB_Width, BB_Pct, ATR (14) |
-| Price position | Range, RangePct, Price_vs_MA50, Price_vs_MA200 |
-| Moving averages | MA7, MA21 |
-| Calendar | DayOfWeek, Month |
+| Lag prices | Lag1–Lag20 |
+| Lag returns | RetLag1–RetLag5 |
+| Rolling stats | RollingMean/Std 5/10 |
+| Returns | Return, LogReturn, Volatility, VolRatio |
+| Volume | Volume, Volume_Ratio, OBV_Ratio |
+| Momentum | RSI7/14, MACD, Stoch %K/%D, Williams %R, CCI |
+| Bands | BB_Width, BB_Pct, ATR_Norm |
+| Price vs MAs | vs MA5/10/21/50/200 |
+| Momentum ratios | Momentum5/10/20 |
+| Calendar | DayOfWeek, Month, Quarter, EarningsMonth |
+| Regime | Regime label, Bear/Side/Bull probabilities |
 
-### 3. Modeling
-- **Model:** `VotingRegressor` — GradientBoosting (500 trees) + RandomForest (300 trees)
-- **Scaling:** `RobustScaler` inside a `Pipeline` (no leakage)
-- **Validation:** 5-fold walk-forward (time-series) cross-validation
-- **Metrics:** RMSE, MAE, R², CV-RMSE, CV-R², Directional Accuracy
+### Model
+- Level-0: XGBoost + LightGBM + RandomForest + ExtraTrees
+- Level-1: Ridge meta-learner (trained on OOF predictions)
+- Scaler: RobustScaler
+- Validation: 5-fold walk-forward CV
+- Target: next-day return (%) — stationary
 
-### 4. Explainability
-- SHAP TreeExplainer on the GBR sub-model
-- Summary dot plot + bar chart saved to `outputs/`
+### Conformal Prediction
+- Split conformal (inductive) with 90% coverage guarantee
+- Calibrated on held-out 10% of training set
+- Reports interval width and empirical coverage on test set
 
-### 5. Forecasting
-- ARIMA(5,1,0) on monthly-resampled close prices
-- 5-year projection with 95% confidence interval
-
-### 6. Visualizations (18 plots)
-Close distribution, returns histogram, yearly bar/box/violin, pairplot, scatter, correlation heatmap, moving averages, Bollinger Bands, RSI, MACD, time series, ARIMA forecast, actual vs predicted, residuals, feature importance, walk-forward CV scores, volatility regime
-
----
-
-## Results
-
-| Metric | Value |
-|---|---|
-| Model | GBR + RF Ensemble |
-| CV R² (mean) | improved vs baseline ~0.23 |
-| Directional Accuracy | tracked per run |
-| SHAP | ✅ integrated |
-
-> Stock prediction is inherently noisy. Walk-forward CV gives a realistic estimate of out-of-sample performance.
-
----
-
-## Project Structure
-```
-netflix-stock-project/
-├── app/
-│   ├── app.py               # Streamlit app (4 tabs: Predict, EDA, Charts, About)
-│   └── STREAMLIT_URL.md     # Live deployment URL
-├── data/
-│   └── netflix.csv
-├── models/
-│   └── model.pkl            # Saved ensemble pipeline
-├── outputs/                 # All generated plots + metrics.json
-├── src/
-│   ├── data_loader.py
-│   ├── preprocessing.py
-│   ├── eda.py
-│   ├── feature_engineering.py
-│   ├── modeling.py          # Ensemble + walk-forward CV
-│   ├── visualization.py     # 18 plots
-│   ├── forecasting.py       # ARIMA with CI
-│   ├── explainability.py    # SHAP analysis
-│   ├── utils.py
-│   └── test_model.py
-├── .streamlit/
-│   └── config.toml          # Netflix-themed dark UI
-├── streamlit_app.py         # Streamlit Cloud entry point
-├── main.py                  # Full pipeline runner
-└── requirements.txt
-```
+### Backtesting
+- Binary long/flat strategy + Kelly-sized variant
+- Transaction cost: 0.1% per trade
+- Metrics: Total Return, Ann Return, Sharpe, Sortino, Calmar, Max Drawdown, Win Rate
+- Rolling 63-day Sharpe to detect strategy decay
 
 ---
 
 ## Running Locally
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
 
 # Train model + generate all outputs
 python main.py
 
+# With live data from Yahoo Finance
+python main.py --source live
+
+# Generate default config.yaml to customise
+python main.py --save-config
+
+# Run tests
+pytest tests/ -v
+
+# Start FastAPI server
+uvicorn api.main:app --reload
+# Swagger UI at http://localhost:8000/docs
+
 # Launch Streamlit app
-streamlit run streamlit_app.py
+streamlit run app/app.py
 ```
 
 ---
 
-## Streamlit Cloud Deployment
-1. Push repo to GitHub
-2. Go to [share.streamlit.io](https://share.streamlit.io)
-3. Set **Main file path** to `streamlit_app.py`
-4. Deploy — the app reads `models/model.pkl` from the repo
-
-> Make sure `models/model.pkl` is committed (or run `python main.py` in a setup step).
-
----
-
 ## Tech Stack
-Python · Pandas · NumPy · Scikit-learn · Matplotlib · Seaborn · Statsmodels · SHAP · Streamlit · Joblib
+Python · Pandas · NumPy · Scikit-learn · XGBoost · LightGBM · hmmlearn · SHAP · Statsmodels · FastAPI · Streamlit · Pytest · GitHub Actions

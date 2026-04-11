@@ -196,6 +196,15 @@ with tab_pred:
             c3.metric("Implied Return",         f"{ret:+.2f}%",
                       delta=f"{ret:+.2f}%", delta_color="normal")
 
+            # ── Conformal interval ────────────────────────────────────────────
+            if hasattr(model, 'conformal_'):
+                cp = model.conformal_
+                lo_r, hi_r = cp.predict_interval(row.values)
+                lo_p = last * (1 + lo_r[0] / 100)
+                hi_p = last * (1 + hi_r[0] / 100)
+                st.info(f"90% Prediction Interval: **${lo_p:.2f}** to **${hi_p:.2f}**  "
+                        f"(return: {lo_r[0]:+.2f}% to {hi_r[0]:+.2f}%)")
+
             # ── Mini chart ────────────────────────────────────────────────────
             fig, ax = plt.subplots(figsize=(10, 3))
             ax.plot(range(len(df_in)), df_in['Close'], marker='o', label='Input Close')
@@ -431,30 +440,40 @@ with tab_backtest:
 
     if os.path.exists(bt_path):
         curves = pd.read_csv(bt_path, index_col=0)
+        rs_path = os.path.join(REPO_ROOT, "outputs", "rolling_sharpe.csv")
 
         # ── Equity curve ──────────────────────────────────────────────────────
         fig, ax = plt.subplots(figsize=(12, 5))
-        ax.plot(curves.index, curves["Strategy"],   label="Model Strategy", linewidth=1.5)
-        ax.plot(curves.index, curves["BuyAndHold"], label="Buy & Hold",     linewidth=1.5, linestyle="--")
+        ax.plot(curves.index, curves["Strategy"],   label="Binary Strategy", linewidth=1.5)
+        if "Kelly" in curves.columns:
+            ax.plot(curves.index, curves["Kelly"], label="Kelly Strategy", linewidth=1.2, linestyle="-.")
+        ax.plot(curves.index, curves["BuyAndHold"], label="Buy & Hold", linewidth=1.5, linestyle="--")
         ax.axhline(1.0, color="gray", linestyle=":", alpha=0.5)
         ax.set_title("Strategy vs Buy & Hold — Equity Curve")
-        ax.set_ylabel("Portfolio Value (starting = 1.0)")
+        ax.set_ylabel("Portfolio Value (start = 1.0)")
         ax.legend()
         st.pyplot(fig); plt.close()
+
+        # ── Rolling Sharpe ────────────────────────────────────────────────────
+        if os.path.exists(rs_path):
+            rs = pd.read_csv(rs_path).squeeze()
+            fig, ax = plt.subplots(figsize=(12, 3))
+            ax.plot(rs.values, color="purple", linewidth=1)
+            ax.axhline(0, color="gray", linestyle="--", alpha=0.5)
+            ax.axhline(1, color="green", linestyle=":", alpha=0.5, label="Sharpe=1")
+            ax.set_title("Rolling 63-Day Sharpe Ratio")
+            ax.legend()
+            st.pyplot(fig); plt.close()
 
         # ── Metrics ───────────────────────────────────────────────────────────
         if os.path.exists(metrics_path):
             import json
             with open(metrics_path) as f:
                 ml_metrics = json.load(f)
-
             st.markdown("#### ML Model Metrics")
-            mc = st.columns(len(ml_metrics))
-            for col, (k, v) in zip(mc, ml_metrics.items()):
+            mc = st.columns(min(len(ml_metrics), 5))
+            for col, (k, v) in zip(mc, list(ml_metrics.items())[:5]):
                 col.metric(k, f"{v:.4f}")
-
-        st.markdown("#### Trading Strategy Metrics")
-        st.caption("Run `python main.py` to generate backtest results.")
 
     else:
         st.info("No backtest data found. Run `python main.py` to generate it.")

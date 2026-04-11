@@ -116,4 +116,10 @@ def create_features(df):
     df['Month']     = df.index.month
     df['Quarter']   = df.index.quarter
 
+    # ── Earnings proximity flag (approx: Jan/Apr/Jul/Oct earnings months) ─────
+    df['EarningsMonth'] = df['Month'].isin([1, 4, 7, 10]).astype(int)
+
+    # ── Realised volatility ratio (short vs long) — regime proxy ─────────────
+    df['VolRatio_5_20'] = df['Volatility_5'] / df['Volatility'].replace(0, np.nan)
+
     return df.dropna()
