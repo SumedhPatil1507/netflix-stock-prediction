@@ -80,15 +80,28 @@ tab_pred, tab_eda, tab_charts, tab_backtest, tab_drift, tab_about = st.tabs(
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_pred:
     st.subheader("Enter the last 10 trading days of OHLCV data")
-    st.info("Fill in the table below (most recent row = last row). The app computes all 29 features automatically.")
+    st.info("Table auto-filled with real NFLX data from Yahoo Finance. Edit any values or use your own.")
 
-    default_data = {
-        "Open":   [600, 605, 610, 615, 620, 625, 630, 635, 640, 645],
-        "High":   [610, 615, 620, 625, 630, 635, 640, 645, 650, 655],
-        "Low":    [595, 600, 605, 610, 615, 620, 625, 630, 635, 640],
-        "Close":  [605, 610, 615, 620, 625, 630, 635, 640, 645, 650],
-        "Volume": [5_000_000] * 10,
-    }
+    # ── Default data: try live NFLX, fall back to placeholder ────────────────
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def _get_default_ohlcv():
+        try:
+            import yfinance as yf
+            df_live = yf.Ticker("NFLX").history(period="20d")
+            df_live = df_live[['Open','High','Low','Close','Volume']].dropna().tail(10)
+            df_live.columns = ['Open','High','Low','Close','Volume']
+            df_live = df_live.round(2)
+            return df_live.reset_index(drop=True).to_dict('list')
+        except Exception:
+            return {
+                "Open":   [600, 605, 610, 615, 620, 625, 630, 635, 640, 645],
+                "High":   [610, 615, 620, 625, 630, 635, 640, 645, 650, 655],
+                "Low":    [595, 600, 605, 610, 615, 620, 625, 630, 635, 640],
+                "Close":  [605, 610, 615, 620, 625, 630, 635, 640, 645, 650],
+                "Volume": [5_000_000] * 10,
+            }
+
+    default_data = _get_default_ohlcv()
 
     edited = st.data_editor(
         pd.DataFrame(default_data),
