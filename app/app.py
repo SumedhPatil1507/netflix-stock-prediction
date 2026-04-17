@@ -34,15 +34,27 @@ def load_model():
     return joblib.load(MODEL_PATH)
 
 @st.cache_data(show_spinner="Loading data...")
-def get_data(source="csv"):
-    # Fast path: use pre-computed parquet cache if available and source is csv
-    if source == "csv" and os.path.exists(CACHE_PATH):
+def get_data(source="live"):
+    # Try live first, fall back to CSV parquet cache, then raw CSV
+    if source == "live":
+        try:
+            from src.data_loader import load_data
+            from src.preprocessing import preprocess_data
+            from src.feature_engineering import create_features
+            df = load_data(source="live")
+            df = preprocess_data(df)
+            df = create_features(df)
+            return df
+        except Exception:
+            pass  # fall through to cache
+    # Fast path: parquet cache
+    if os.path.exists(CACHE_PATH):
         return pd.read_parquet(CACHE_PATH)
-    # Slow path: compute features from scratch
+    # Slow path: raw CSV
     from src.data_loader import load_data
     from src.preprocessing import preprocess_data
     from src.feature_engineering import create_features
-    df = load_data(source=source)
+    df = load_data(source="csv")
     df = preprocess_data(df)
     df = create_features(df)
     return df
@@ -61,13 +73,20 @@ if hasattr(model, 'feature_names_'):
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("Settings")
-    data_source = st.radio("Data source", ["csv", "live (yfinance)"],
-                           help="'live' fetches latest NFLX data from Yahoo Finance")
+    data_source = st.radio(
+        "Data source",
+        ["live (yfinance)", "csv"],
+        index=0,
+        help="'live' fetches latest NFLX data from Yahoo Finance (recommended)"
+    )
     source_key = "live" if "live" in data_source else "csv"
-    st.caption("Live data requires internet access.")
+    if source_key == "live":
+        st.success("Using live NFLX data")
+    else:
+        st.info("Using static CSV data")
     st.markdown("---")
     st.markdown("**Model:** XGB + LGBM + RF + ET → Ridge")
-    st.markdown("**Features:** 49 technical indicators")
+    st.markdown("**Features:** 51 technical indicators")
     st.markdown("**Target:** Next-day return (%)")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────

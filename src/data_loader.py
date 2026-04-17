@@ -27,6 +27,9 @@ def _load_live() -> pd.DataFrame:
         ticker = yf.Ticker("NFLX")
         df = ticker.history(period="max")
         df = df.reset_index()
+        # Normalize timezone-aware timestamps
+        if hasattr(df["Date"].dtype, "tz") and df["Date"].dtype.tz is not None:
+            df["Date"] = df["Date"].dt.tz_localize(None)
         df = df.rename(columns={"Date": "Date", "Open": "Open", "High": "High",
                                   "Low": "Low", "Close": "Close", "Volume": "Volume"})
         df["Stock Splits"] = 0
