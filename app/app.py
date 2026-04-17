@@ -34,8 +34,7 @@ def load_model():
     return joblib.load(MODEL_PATH)
 
 @st.cache_data(show_spinner="Loading data...")
-def get_data(source="live"):
-    # Try live first, fall back to CSV parquet cache, then raw CSV
+def get_data(source="csv"):
     if source == "live":
         try:
             from src.data_loader import load_data
@@ -46,11 +45,11 @@ def get_data(source="live"):
             df = create_features(df)
             return df
         except Exception:
-            pass  # fall through to cache
-    # Fast path: parquet cache
+            pass
+    # Fast path: parquet cache (committed to repo, instant load)
     if os.path.exists(CACHE_PATH):
         return pd.read_parquet(CACHE_PATH)
-    # Slow path: raw CSV
+    # Fallback: raw CSV
     from src.data_loader import load_data
     from src.preprocessing import preprocess_data
     from src.feature_engineering import create_features
@@ -75,15 +74,15 @@ with st.sidebar:
     st.header("Settings")
     data_source = st.radio(
         "Data source",
-        ["live (yfinance)", "csv"],
+        ["csv (fast)", "live (yfinance)"],
         index=0,
-        help="'live' fetches latest NFLX data from Yahoo Finance (recommended)"
+        help="CSV uses cached data (instant). Live fetches latest from Yahoo Finance."
     )
     source_key = "live" if "live" in data_source else "csv"
     if source_key == "live":
         st.success("Using live NFLX data")
     else:
-        st.info("Using static CSV data")
+        st.info("Using cached data (faster)")
     st.markdown("---")
     st.markdown("**Model:** XGB + LGBM + RF + ET → Ridge")
     st.markdown("**Features:** 51 technical indicators")
