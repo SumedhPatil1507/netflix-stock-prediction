@@ -51,7 +51,7 @@ CACHE_PATH = os.path.join(REPO_ROOT, "outputs", "features_cache.parquet")
 def load_model():
     return joblib.load(MODEL_PATH)
 
-@st.cache_data(ttl=3600, show_spinner="Fetching live NFLX data...")
+@st.cache_data(ttl=7200, show_spinner="Fetching live NFLX data...")
 def load_live_ohlcv(period: str = "2y") -> pd.DataFrame:
     try:
         import yfinance as yf
@@ -59,8 +59,8 @@ def load_live_ohlcv(period: str = "2y") -> pd.DataFrame:
         if hasattr(df.index.dtype, "tz") and df.index.dtype.tz is not None:
             df.index = df.index.tz_localize(None)
         return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
-    except Exception as e:
-        st.warning(f"Live data unavailable ({e}). Using cached CSV.")
+    except Exception:
+        # Silent fallback — rate limits are expected, CSV is the reliable source
         return None
 
 @st.cache_data(show_spinner="Computing features...")
@@ -138,7 +138,7 @@ tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk, tab_drift, tab_shap
 with tab_market:
     st.subheader("Live Market Overview")
 
-    @st.cache_data(ttl=3600)
+    @st.cache_data(ttl=7200)
     def _get_period_data(p):
         try:
             import yfinance as yf
@@ -247,7 +247,7 @@ with tab_pred:
     st.subheader("Next-Day Return Prediction")
     st.caption("Auto-filled with live NFLX data. Edit any row or use your own values.")
 
-    @st.cache_data(ttl=3600, show_spinner=False)
+    @st.cache_data(ttl=7200, show_spinner=False)
     def _live_input():
         try:
             import yfinance as yf
