@@ -661,147 +661,112 @@ with tab_drift:
         st.info("Install scipy: `pip install scipy`")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 8 — EXPLAINABILITY (SHAP — interactive Plotly)
+# TAB 8 — EXPLAINABILITY (Feature Importance — interactive Plotly)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_shap:
-    st.subheader("SHAP Explainability")
-    st.caption("SHapley Additive exPlanations — interactive feature importance and impact analysis.")
+    st.subheader("Model Explainability")
+    st.caption("Feature importance from all 4 base learners + correlation analysis.")
 
-    @st.cache_data(show_spinner="Computing SHAP values...")
-    def _compute_shap(max_samples: int = 200):
-        """Compute SHAP values from the live model and feature data."""
+    @st.cache_data(show_spinner="Computing feature importance...")
+    def _compute_importance():
+        """Average feature importances from all tree-based base learners."""
         try:
-            import shap as shap_lib
-            from sklearn.preprocessing import RobustScaler
-
-            xgb_est = None
-            for name, est in model.fitted_learners_:
-                if "xgb" in name.lower():
-                    xgb_est = est
-                    break
-            if xgb_est is None:
-                return None, None, "XGB estimator not found in model"
-
-            feat_df   = get_featured_data()
             feat_cols = model.feature_names_ if hasattr(model, "feature_names_") else FEATURES
-            avail     = [f for f in feat_cols if f in feat_df.columns]
-
-            # Force all columns to float64 — parquet/cache may have mixed types
-            X_raw = feat_df[avail].copy()
-            for col in X_raw.columns:
-                X_raw[col] = pd.to_numeric(X_raw[col], errors="coerce")
-            X_raw = X_raw.dropna().tail(500)
-
-            if X_raw.empty:
-                return None, None, "No valid numeric data after cleaning"
-
-            n        = min(max_samples, len(X_raw))
-            X_sample = X_raw.sample(n, random_state=42)
-            X_arr    = X_sample.values.astype(np.float64)
-
-            # Use a fresh scaler fit on this data — avoids any dtype issues
-            # in the model's stored scaler from training time
-            fresh_scaler = RobustScaler()
-            X_scaled     = fresh_scaler.fit_transform(X_arr)
-
-            explainer = shap_lib.TreeExplainer(xgb_est)
-            shap_vals = explainer.shap_values(X_scaled)
-            return shap_vals, X_sample, avail
+            imps, count = None, 0
+            for name, est in model.fitted_learners_:
+                if hasattr(est, "feature_importances_"):
+                    fi = np.array(est.feature_importances_[:len(feat_cols)], dtype=np.float64)
+                    imps = fi if imps is None else imps + fi
+                    count += 1
+            if imps is None or count == 0:
+                return None, None, "No feature importances available"
+            return imps / count, feat_cols, None
         except Exception as e:
             return None, None, str(e)
 
-    shap_vals, X_sample, feat_names = _compute_shap()
+    imps, feat_cols, err = _compute_importance()
 
-    if shap_vals is None:
-        err = feat_names  # third return is error string when failed
-        st.warning(f"SHAP computation unavailable: {err}")
-        st.info("Install shap: `pip install shap` (included in requirements-dev.txt)")
+    if imps is None:
+        st.warning(f"Feature importance unavailable: {err}")
     else:
-        n_top = st.slider("Number of top features to show", 5, min(30, len(feat_names)), 15)
+        n_top = st.slider("Top N features", 5, min(40, len(feat_cols)), 20)
 
-        # ── 1. Mean |SHAP| bar chart (feature importance) ────────────────────
-        mean_abs = np.abs(shap_vals).mean(axis=0)
-        idx      = np.argsort(mean_abs)[-n_top:]
-        top_feats = np.array(feat_names)[idx]
-        top_vals  = mean_abs[idx]
+        # ── 1. Avg feature importance bar ─────────────────────────────────────
+        idx       = np.argsort(imps)[-n_top:]
+        top_feats = np.array(feat_cols)[idx]
+        top_vals  = imps[idx]
 
-        fig_bar = go.Figure(go.Bar(
+        fig_fi = go.Figure(go.Bar(
             x=top_vals, y=top_feats, orientation="h",
-            marker=dict(
-                color=top_vals,
-                colorscale="Reds",
-                showscale=True,
-                colorbar=dict(title="Mean |SHAP|"),
-            ),
+            marker=dict(color=top_vals, colorscale="Reds",
+                        showscale=True, colorbar=dict(title="Importance")),
         ))
-        fig_bar.update_layout(
-            template="plotly_dark", height=max(350, n_top * 22),
-            title=f"Top {n_top} Features — Mean |SHAP| Value",
-            xaxis_title="Mean |SHAP| (average impact on prediction)",
+        fig_fi.update_layout(
+            template="plotly_dark", height=max(400, n_top * 22),
+            title=f"Top {n_top} Features — Avg Importance (XGB + LGBM + RF + ET)",
+            xaxis_title="Feature Importance (higher = more influential)",
             margin=dict(l=0, r=0, t=40, b=0),
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_fi, use_container_width=True)
 
-        # ── 2. SHAP beeswarm / scatter (impact vs feature value) ─────────────
-        st.markdown("#### Feature Impact vs Feature Value")
-        feat_choice = st.selectbox(
-            "Select feature to inspect",
-            options=list(reversed(top_feats)),
-            index=0,
-        )
-        feat_idx   = list(feat_names).index(feat_choice)
-        feat_vals  = X_sample.iloc[:, feat_idx].values
-        shap_for_f = shap_vals[:, feat_idx]
+        # ── 2. Per-model importance comparison ────────────────────────────────
+        st.markdown("#### Per-Model Importance Comparison")
+        model_imps = {}
+        for name, est in model.fitted_learners_:
+            if hasattr(est, "feature_importances_"):
+                fi = np.array(est.feature_importances_[:len(feat_cols)], dtype=np.float64)
+                model_imps[name] = fi
 
-        fig_scatter = go.Figure(go.Scatter(
-            x=feat_vals, y=shap_for_f,
-            mode="markers",
-            marker=dict(
-                color=feat_vals,
-                colorscale="RdBu_r",
-                size=5, opacity=0.7,
-                showscale=True,
-                colorbar=dict(title=feat_choice),
-            ),
-            text=[f"SHAP: {s:.4f}<br>Value: {v:.4f}"
-                  for s, v in zip(shap_for_f, feat_vals)],
-            hovertemplate="%{text}<extra></extra>",
-        ))
-        fig_scatter.add_hline(y=0, line_color="white", opacity=0.3)
-        fig_scatter.update_layout(
-            template="plotly_dark", height=400,
-            title=f"SHAP Impact of '{feat_choice}'",
-            xaxis_title=f"{feat_choice} value",
-            yaxis_title="SHAP value (impact on prediction)",
-            margin=dict(l=0, r=0, t=40, b=0),
-        )
-        st.plotly_chart(fig_scatter, use_container_width=True)
+        if model_imps:
+            top_feat_list = list(top_feats)
+            fig_comp = go.Figure()
+            colors = {"xgb": "#e50914", "lgbm": "#ffd700",
+                      "rf": "#00c853", "et": "#00bcd4"}
+            for mname, mfi in model_imps.items():
+                vals = [mfi[list(feat_cols).index(f)] if f in feat_cols else 0
+                        for f in top_feat_list]
+                fig_comp.add_trace(go.Bar(
+                    name=mname.upper(), x=vals, y=top_feat_list,
+                    orientation="h",
+                    marker_color=colors.get(mname, "#9e9e9e"),
+                    opacity=0.8,
+                ))
+            fig_comp.update_layout(
+                template="plotly_dark", barmode="group",
+                height=max(400, n_top * 28),
+                title="Feature Importance by Model",
+                xaxis_title="Importance",
+                margin=dict(l=0, r=0, t=40, b=0),
+            )
+            st.plotly_chart(fig_comp, use_container_width=True)
 
-        # ── 3. SHAP waterfall for a single prediction ─────────────────────────
-        st.markdown("#### Single Prediction Explanation")
-        sample_idx = st.slider("Sample index", 0, len(X_sample) - 1, 0)
-        shap_row   = shap_vals[sample_idx]
-        top_idx    = np.argsort(np.abs(shap_row))[-n_top:]
-        top_f      = np.array(feat_names)[top_idx]
-        top_s      = shap_row[top_idx]
+        # ── 3. Feature correlation with target ────────────────────────────────
+        st.markdown("#### Feature Correlation with Next-Day Return")
+        feat_df = get_featured_data()
+        if "Return" in feat_df.columns:
+            feat_df["NextReturn"] = feat_df["Return"].shift(-1)
+            avail = [f for f in top_feats if f in feat_df.columns]
+            corr  = feat_df[avail + ["NextReturn"]].dropna() \
+                        .corr()["NextReturn"].drop("NextReturn").reindex(avail)
 
-        fig_wf = go.Figure(go.Bar(
-            x=top_s, y=top_f, orientation="h",
-            marker_color=["#00c853" if v > 0 else "#e50914" for v in top_s],
-        ))
-        fig_wf.add_vline(x=0, line_color="white", opacity=0.3)
-        fig_wf.update_layout(
-            template="plotly_dark", height=max(300, n_top * 22),
-            title=f"Prediction #{sample_idx} — Feature Contributions",
-            xaxis_title="SHAP value (green = pushes return up, red = pushes down)",
-            margin=dict(l=0, r=0, t=40, b=0),
-        )
-        st.plotly_chart(fig_wf, use_container_width=True)
+            fig_corr = go.Figure(go.Bar(
+                x=corr.values, y=corr.index,
+                orientation="h",
+                marker_color=["#00c853" if v > 0 else "#e50914" for v in corr.values],
+            ))
+            fig_corr.add_vline(x=0, line_color="white", opacity=0.3)
+            fig_corr.update_layout(
+                template="plotly_dark", height=max(350, n_top * 22),
+                title="Pearson Correlation of Top Features with Next-Day Return",
+                xaxis_title="Correlation coefficient",
+                margin=dict(l=0, r=0, t=40, b=0),
+            )
+            st.plotly_chart(fig_corr, use_container_width=True)
 
         st.caption(
-            "SHAP uses TreeExplainer on the XGBoost base learner. "
-            "Values show how much each feature pushed the predicted return "
-            "above or below the baseline."
+            "Feature importance = average gain across all splits in each tree model. "
+            "Correlation shows linear relationship with next-day return — "
+            "low correlation doesn't mean a feature is useless (non-linear effects)."
         )
 
 # ═══════════════════════════════════════════════════════════════════════════════
