@@ -672,6 +672,8 @@ with tab_shap:
         """Compute SHAP values from the live model and feature data."""
         try:
             import shap as shap_lib
+            from sklearn.preprocessing import RobustScaler
+
             xgb_est = None
             for name, est in model.fitted_learners_:
                 if "xgb" in name.lower():
@@ -684,7 +686,7 @@ with tab_shap:
             feat_cols = model.feature_names_ if hasattr(model, "feature_names_") else FEATURES
             avail     = [f for f in feat_cols if f in feat_df.columns]
 
-            # Force all columns to numeric — parquet may store some as object/string
+            # Force all columns to float64 — parquet/cache may have mixed types
             X_raw = feat_df[avail].copy()
             for col in X_raw.columns:
                 X_raw[col] = pd.to_numeric(X_raw[col], errors="coerce")
@@ -695,10 +697,12 @@ with tab_shap:
 
             n        = min(max_samples, len(X_raw))
             X_sample = X_raw.sample(n, random_state=42)
-
-            # Explicit float64 cast before scaling
             X_arr    = X_sample.values.astype(np.float64)
-            X_scaled = model.scaler.transform(X_arr)
+
+            # Use a fresh scaler fit on this data — avoids any dtype issues
+            # in the model's stored scaler from training time
+            fresh_scaler = RobustScaler()
+            X_scaled     = fresh_scaler.fit_transform(X_arr)
 
             explainer = shap_lib.TreeExplainer(xgb_est)
             shap_vals = explainer.shap_values(X_scaled)
