@@ -678,19 +678,30 @@ with tab_shap:
                     xgb_est = est
                     break
             if xgb_est is None:
-                return None, None, None
+                return None, None, "XGB estimator not found in model"
 
             feat_df   = get_featured_data()
             feat_cols = model.feature_names_ if hasattr(model, "feature_names_") else FEATURES
             avail     = [f for f in feat_cols if f in feat_df.columns]
-            X_raw     = feat_df[avail].dropna().tail(500)
 
-            n         = min(max_samples, len(X_raw))
-            X_sample  = X_raw.sample(n, random_state=42)
-            X_scaled  = model.scaler.transform(X_sample.values)
+            # Force all columns to numeric — parquet may store some as object/string
+            X_raw = feat_df[avail].copy()
+            for col in X_raw.columns:
+                X_raw[col] = pd.to_numeric(X_raw[col], errors="coerce")
+            X_raw = X_raw.dropna().tail(500)
 
-            explainer   = shap_lib.TreeExplainer(xgb_est)
-            shap_vals   = explainer.shap_values(X_scaled)
+            if X_raw.empty:
+                return None, None, "No valid numeric data after cleaning"
+
+            n        = min(max_samples, len(X_raw))
+            X_sample = X_raw.sample(n, random_state=42)
+
+            # Explicit float64 cast before scaling
+            X_arr    = X_sample.values.astype(np.float64)
+            X_scaled = model.scaler.transform(X_arr)
+
+            explainer = shap_lib.TreeExplainer(xgb_est)
+            shap_vals = explainer.shap_values(X_scaled)
             return shap_vals, X_sample, avail
         except Exception as e:
             return None, None, str(e)

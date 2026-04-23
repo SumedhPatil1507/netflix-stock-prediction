@@ -70,7 +70,11 @@ def main(source: str = "csv", config_path: str = "config.yaml") -> None:
     # ── Cache features for fast Streamlit load ────────────────────────────────
     try:
         cache_path = os.path.join("outputs", "features_cache.parquet")
-        df.to_parquet(cache_path)
+        # Ensure all columns are float64 before saving — prevents string dtype issues
+        df_cache = df.copy()
+        for col in df_cache.columns:
+            df_cache[col] = pd.to_numeric(df_cache[col], errors="coerce")
+        df_cache.to_parquet(cache_path)
         logger.info(f"Feature cache saved -> {cache_path}")
     except Exception as e:
         logger.warning(f"Feature cache save failed: {e}")
