@@ -661,44 +661,133 @@ with tab_drift:
         st.info("Install scipy: `pip install scipy`")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 8 — EXPLAINABILITY (SHAP)
+# TAB 8 — EXPLAINABILITY (SHAP — interactive Plotly)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_shap:
     st.subheader("SHAP Explainability")
-    st.caption("SHapley Additive exPlanations — how much each feature contributed to each prediction.")
+    st.caption("SHapley Additive exPlanations — interactive feature importance and impact analysis.")
 
-    shap_sum = os.path.join(REPO_ROOT, "outputs", "shap_summary.png")
-    shap_bar = os.path.join(REPO_ROOT, "outputs", "shap_bar.png")
+    @st.cache_data(show_spinner="Computing SHAP values...")
+    def _compute_shap(max_samples: int = 200):
+        """Compute SHAP values from the live model and feature data."""
+        try:
+            import shap as shap_lib
+            xgb_est = None
+            for name, est in model.fitted_learners_:
+                if "xgb" in name.lower():
+                    xgb_est = est
+                    break
+            if xgb_est is None:
+                return None, None, None
 
-    if os.path.exists(shap_sum) and os.path.exists(shap_bar):
-        col1, col2 = st.columns(2)
-        with col1:
-            st.image(shap_sum, caption="SHAP Summary — feature impact distribution", use_column_width=True)
-        with col2:
-            st.image(shap_bar, caption="SHAP Bar — mean |SHAP| per feature", use_column_width=True)
+            feat_df   = get_featured_data()
+            feat_cols = model.feature_names_ if hasattr(model, "feature_names_") else FEATURES
+            avail     = [f for f in feat_cols if f in feat_df.columns]
+            X_raw     = feat_df[avail].dropna().tail(500)
 
-        st.markdown("""
-        **How to read these:**
-        - **Summary plot (left):** Each dot is one prediction. Red = high feature value, blue = low.
-          Dots to the right = positive impact on predicted return. Dots to the left = negative impact.
-        - **Bar plot (right):** Average absolute SHAP value per feature — the higher the bar,
-          the more that feature influences predictions on average.
-        - Features at the top are the most important to the model's decisions.
-        """)
+            n         = min(max_samples, len(X_raw))
+            X_sample  = X_raw.sample(n, random_state=42)
+            X_scaled  = model.scaler.transform(X_sample.values)
+
+            explainer   = shap_lib.TreeExplainer(xgb_est)
+            shap_vals   = explainer.shap_values(X_scaled)
+            return shap_vals, X_sample, avail
+        except Exception as e:
+            return None, None, str(e)
+
+    shap_vals, X_sample, feat_names = _compute_shap()
+
+    if shap_vals is None:
+        err = feat_names  # third return is error string when failed
+        st.warning(f"SHAP computation unavailable: {err}")
+        st.info("Install shap: `pip install shap` (included in requirements-dev.txt)")
     else:
-        st.info("SHAP plots not generated yet. Run `python main.py` to generate them.")
-        st.markdown("""
-        **What SHAP does in this project:**
-        - Uses `TreeExplainer` on the XGBoost base learner inside the stacking ensemble
-        - Computes exact Shapley values (not approximations) — possible because XGB is a tree model
-        - Shows which of the 51 features actually drive predictions vs which are noise
-        - Provides individual prediction explanations — "this prediction was +0.3% because RSI was 72 (overbought) and price is 8% above MA200"
+        n_top = st.slider("Number of top features to show", 5, min(30, len(feat_names)), 15)
 
-        **Why this matters:**
-        - A model that can't explain its predictions is a black box — unusable in any regulated context
-        - SHAP is the industry standard for ML explainability (used at every major tech company)
-        - Interviewers specifically ask about explainability — having it implemented shows production awareness
-        """)
+        # ── 1. Mean |SHAP| bar chart (feature importance) ────────────────────
+        mean_abs = np.abs(shap_vals).mean(axis=0)
+        idx      = np.argsort(mean_abs)[-n_top:]
+        top_feats = np.array(feat_names)[idx]
+        top_vals  = mean_abs[idx]
+
+        fig_bar = go.Figure(go.Bar(
+            x=top_vals, y=top_feats, orientation="h",
+            marker=dict(
+                color=top_vals,
+                colorscale="Reds",
+                showscale=True,
+                colorbar=dict(title="Mean |SHAP|"),
+            ),
+        ))
+        fig_bar.update_layout(
+            template="plotly_dark", height=max(350, n_top * 22),
+            title=f"Top {n_top} Features — Mean |SHAP| Value",
+            xaxis_title="Mean |SHAP| (average impact on prediction)",
+            margin=dict(l=0, r=0, t=40, b=0),
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        # ── 2. SHAP beeswarm / scatter (impact vs feature value) ─────────────
+        st.markdown("#### Feature Impact vs Feature Value")
+        feat_choice = st.selectbox(
+            "Select feature to inspect",
+            options=list(reversed(top_feats)),
+            index=0,
+        )
+        feat_idx   = list(feat_names).index(feat_choice)
+        feat_vals  = X_sample.iloc[:, feat_idx].values
+        shap_for_f = shap_vals[:, feat_idx]
+
+        fig_scatter = go.Figure(go.Scatter(
+            x=feat_vals, y=shap_for_f,
+            mode="markers",
+            marker=dict(
+                color=feat_vals,
+                colorscale="RdBu_r",
+                size=5, opacity=0.7,
+                showscale=True,
+                colorbar=dict(title=feat_choice),
+            ),
+            text=[f"SHAP: {s:.4f}<br>Value: {v:.4f}"
+                  for s, v in zip(shap_for_f, feat_vals)],
+            hovertemplate="%{text}<extra></extra>",
+        ))
+        fig_scatter.add_hline(y=0, line_color="white", opacity=0.3)
+        fig_scatter.update_layout(
+            template="plotly_dark", height=400,
+            title=f"SHAP Impact of '{feat_choice}'",
+            xaxis_title=f"{feat_choice} value",
+            yaxis_title="SHAP value (impact on prediction)",
+            margin=dict(l=0, r=0, t=40, b=0),
+        )
+        st.plotly_chart(fig_scatter, use_container_width=True)
+
+        # ── 3. SHAP waterfall for a single prediction ─────────────────────────
+        st.markdown("#### Single Prediction Explanation")
+        sample_idx = st.slider("Sample index", 0, len(X_sample) - 1, 0)
+        shap_row   = shap_vals[sample_idx]
+        top_idx    = np.argsort(np.abs(shap_row))[-n_top:]
+        top_f      = np.array(feat_names)[top_idx]
+        top_s      = shap_row[top_idx]
+
+        fig_wf = go.Figure(go.Bar(
+            x=top_s, y=top_f, orientation="h",
+            marker_color=["#00c853" if v > 0 else "#e50914" for v in top_s],
+        ))
+        fig_wf.add_vline(x=0, line_color="white", opacity=0.3)
+        fig_wf.update_layout(
+            template="plotly_dark", height=max(300, n_top * 22),
+            title=f"Prediction #{sample_idx} — Feature Contributions",
+            xaxis_title="SHAP value (green = pushes return up, red = pushes down)",
+            margin=dict(l=0, r=0, t=40, b=0),
+        )
+        st.plotly_chart(fig_wf, use_container_width=True)
+
+        st.caption(
+            "SHAP uses TreeExplainer on the XGBoost base learner. "
+            "Values show how much each feature pushed the predicted return "
+            "above or below the baseline."
+        )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 9 — ARCHITECTURE
