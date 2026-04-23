@@ -123,12 +123,13 @@ tabs = st.tabs([
     "🕯 Market Overview",
     "🔮 Predict",
     "📈 Backtesting",
+    "📋 Paper Trade",
     "🧠 Sentiment",
     "⚠️ Risk",
     "🔬 Drift Monitor",
     "🏗 Architecture",
 ])
-tab_market, tab_pred, tab_bt, tab_sent, tab_risk, tab_drift, tab_arch = tabs
+tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk, tab_drift, tab_arch = tabs
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — MARKET OVERVIEW (Candlestick + indicators)
@@ -377,7 +378,101 @@ with tab_bt:
         st.info("Run `python main.py` to generate backtest results.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — SENTIMENT
+# TAB 4 — PAPER TRADE
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_paper:
+    st.subheader("Paper Trading Simulation")
+    st.caption("Runs the model day-by-day on live data, logging each prediction vs actual — simulating real deployment.")
+
+    PAPER_LOG = os.path.join(REPO_ROOT, "outputs", "paper_trade_log.csv")
+
+    c_btn, c_days = st.columns([3, 1])
+    with c_days:
+        sim_days = st.number_input("Days to simulate", 10, 365, 90, 10)
+    with c_btn:
+        run_sim = st.button("Run Paper Trade Simulation", type="primary")
+
+    if run_sim:
+        with st.spinner(f"Simulating {sim_days} trading days..."):
+            try:
+                from src.paper_trade import run_paper_trade, paper_trade_summary
+                log_df  = run_paper_trade(days=int(sim_days))
+                summary = paper_trade_summary(log_df)
+                st.session_state["paper_log"]     = log_df
+                st.session_state["paper_summary"] = summary
+            except Exception as e:
+                st.error(f"Simulation failed: {e}")
+                st.exception(e)
+
+    # Load from session or saved CSV
+    _log = st.session_state.get("paper_log",
+           pd.read_csv(PAPER_LOG) if os.path.exists(PAPER_LOG) else None)
+    _sum = st.session_state.get("paper_summary", {})
+
+    if _log is not None and not _log.empty:
+        if not _sum:
+            from src.paper_trade import paper_trade_summary
+            _sum = paper_trade_summary(_log)
+
+        # KPIs
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("Days Simulated", _sum.get("days_simulated", 0))
+        k2.metric("Dir Accuracy",   f"{_sum.get('dir_accuracy_pct', 0):.1f}%")
+        k3.metric("Trades Taken",   _sum.get("n_trades", 0))
+        k4.metric("Win Rate",       f"{_sum.get('win_rate_pct', 0):.1f}%")
+        k5.metric("Total PnL",      f"{_sum.get('total_pnl_pct', 0):+.2f}%")
+
+        # Cumulative PnL
+        _log["cum_pnl"] = _log["pnl_pct"].cumsum()
+        fig_pnl = go.Figure()
+        fig_pnl.add_trace(go.Scatter(
+            x=list(range(len(_log))), y=_log["cum_pnl"],
+            name="Cumulative PnL (%)",
+            line=dict(color="#00c853", width=2),
+            fill="tozeroy", fillcolor="rgba(0,200,83,0.1)"))
+        fig_pnl.add_hline(y=0, line_color="white", opacity=0.3)
+        fig_pnl.update_layout(template="plotly_dark", height=350,
+                               title="Cumulative Paper Trade PnL (%)",
+                               yaxis_title="PnL (%)",
+                               margin=dict(l=0, r=0, t=40, b=0))
+        st.plotly_chart(fig_pnl, use_container_width=True)
+
+        # Predicted vs Actual scatter
+        fig_sc = px.scatter(
+            _log, x="actual_return", y="pred_return",
+            color="correct",
+            color_discrete_map={True: "#00c853", False: "#e50914"},
+            title="Predicted vs Actual Return (%)",
+            labels={"actual_return": "Actual Return (%)",
+                    "pred_return": "Predicted Return (%)"},
+            template="plotly_dark", height=350,
+            hover_data=["date", "signal", "direction"])
+        fig_sc.add_hline(y=0, line_color="white", opacity=0.2)
+        fig_sc.add_vline(x=0, line_color="white", opacity=0.2)
+        fig_sc.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+        st.plotly_chart(fig_sc, use_container_width=True)
+
+        # Daily log table
+        st.markdown("#### Daily Trade Log")
+        st.dataframe(
+            _log[["date","prev_close","next_close","pred_return",
+                  "actual_return","signal","direction","correct","pnl_pct"]]
+            .sort_values("date", ascending=False),
+            use_container_width=True,
+        )
+    else:
+        st.info("Click 'Run Paper Trade Simulation' to simulate the model on live data.")
+        st.markdown("""
+        **What this does:**
+        - Fetches live NFLX data from Yahoo Finance
+        - For each day in the simulation window, feeds the model the preceding history
+        - Records: predicted return, actual return, signal (BUY/HOLD), correct/wrong
+        - Shows cumulative PnL and directional accuracy over time
+        - This is the closest thing to a live deployment test without real money
+        """)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — SENTIMENT
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_sent:
     st.subheader("News Sentiment Analysis")

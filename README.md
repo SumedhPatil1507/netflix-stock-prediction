@@ -137,3 +137,35 @@ print(response.json())
 ## Tech Stack
 
 Python · Pandas · NumPy · Scikit-learn · XGBoost · LightGBM · hmmlearn · SHAP · Statsmodels · Plotly · FastAPI · Streamlit · Pytest · Optuna · GitHub Actions
+
+---
+
+## What This Project Demonstrates
+
+| Component | What It Does |
+|---|---|
+| Manual stacking ensemble | XGB + LGBM + RF + ET → Ridge meta-learner via OOF predictions |
+| Walk-forward CV | Time-series aware validation — no future data leakage |
+| Conformal prediction | Calibrated 90% prediction intervals with mathematical coverage guarantee |
+| HMM regime detection | Identifies Bull/Bear/Sideways market states as model features |
+| Kelly criterion backtesting | Position sizing proportional to edge, not binary long/flat |
+| FastAPI serving | Production REST endpoint with Swagger docs |
+| Drift detection | PSI + KS test monitoring for distribution shift |
+| Paper trading simulation | Day-by-day live deployment test with prediction vs actual log |
+| SHAP explainability | Feature-level contribution for every prediction |
+| Optuna tuning | Automated hyperparameter search beyond defaults |
+| GitHub Actions CI | Automated pytest on every push |
+| YAML config system | All hyperparameters in one place, no hardcoded values |
+
+---
+
+## Dashboard Tabs
+
+- **Market Overview** — Live candlestick chart, RSI, MACD, Bollinger Bands (Plotly interactive)
+- **Predict** — Auto-fills with live NFLX data, returns predicted return + 90% conformal interval
+- **Backtesting** — Equity curve, rolling Sharpe, drawdown for binary and Kelly strategies
+- **Paper Trade** — Simulates model running day-by-day on live data, logs each prediction vs actual
+- **Sentiment** — VADER-scored Netflix news headlines with daily sentiment chart
+- **Risk** — VaR/CVaR at configurable confidence, volatility surface, correlation matrix
+- **Drift Monitor** — PSI + KS test on all 51 features comparing training vs recent data
+- **Architecture** — System design, design decisions, and honest limitations

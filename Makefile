@@ -7,6 +7,9 @@ train-live:
 tune:
 	python -m src.tuning
 
+paper-trade:
+	python -m src.paper_trade --days 90
+
 test:
 	pytest tests/ -v
 
@@ -24,4 +27,4 @@ clean:
 	find . -name "*.pyc" -delete 2>/dev/null; \
 	echo "Cleaned."
 
-.PHONY: train train-live tune test app api config clean
+.PHONY: train train-live tune paper-trade test app api config clean
