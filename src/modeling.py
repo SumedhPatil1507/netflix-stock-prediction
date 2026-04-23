@@ -53,7 +53,7 @@ FEATURES = [
 REGIME_FEATURES = ['Regime', 'Regime_Bear', 'Regime_Side', 'Regime_Bull']
 
 
-def get_active_features(df) -> list:
+def get_active_features(df: pd.DataFrame) -> list[str]:
     """Return FEATURES list filtered to columns that exist in df."""
     return [f for f in FEATURES if f in df.columns]
 
@@ -103,7 +103,7 @@ class ManualStackingRegressor:
         self.meta             = Ridge(alpha=1.0 if cfg is None else cfg.model.ridge_alpha)
         self.fitted_learners_ = []
 
-    def fit(self, X, y):
+    def fit(self, X: pd.DataFrame | np.ndarray, y: pd.Series | np.ndarray) -> "ManualStackingRegressor":
         if hasattr(X, 'columns'):
             self.feature_names_ = list(X.columns)
         X = np.array(X)
@@ -128,7 +128,7 @@ class ManualStackingRegressor:
 
         return self
 
-    def predict(self, X):
+    def predict(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
         # If model knows its training features, select/reorder to match exactly
         if hasattr(self, 'feature_names_') and hasattr(X, 'columns'):
             # Add any missing columns as 0, drop any extra columns
@@ -247,10 +247,10 @@ def _directional_accuracy(y_true_ret, pred_ret):
     return float(np.mean(np.sign(y_true_ret) == np.sign(pred_ret)) * 100)
 
 
-def save_model(model):
+def save_model(model: ManualStackingRegressor) -> None:
     joblib.dump(model, MODEL_PATH)
     logger.info(f"Model saved -> {MODEL_PATH}")
 
 
-def load_model():
+def load_model() -> ManualStackingRegressor:
     return joblib.load(MODEL_PATH)

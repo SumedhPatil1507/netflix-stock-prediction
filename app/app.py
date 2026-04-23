@@ -127,9 +127,10 @@ tabs = st.tabs([
     "🧠 Sentiment",
     "⚠️ Risk",
     "🔬 Drift Monitor",
+    "🔍 Explainability",
     "🏗 Architecture",
 ])
-tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk, tab_drift, tab_arch = tabs
+tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk, tab_drift, tab_shap, tab_arch = tabs
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — MARKET OVERVIEW (Candlestick + indicators)
@@ -660,7 +661,47 @@ with tab_drift:
         st.info("Install scipy: `pip install scipy`")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 7 — ARCHITECTURE
+# TAB 8 — EXPLAINABILITY (SHAP)
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_shap:
+    st.subheader("SHAP Explainability")
+    st.caption("SHapley Additive exPlanations — how much each feature contributed to each prediction.")
+
+    shap_sum = os.path.join(REPO_ROOT, "outputs", "shap_summary.png")
+    shap_bar = os.path.join(REPO_ROOT, "outputs", "shap_bar.png")
+
+    if os.path.exists(shap_sum) and os.path.exists(shap_bar):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.image(shap_sum, caption="SHAP Summary — feature impact distribution", use_column_width=True)
+        with col2:
+            st.image(shap_bar, caption="SHAP Bar — mean |SHAP| per feature", use_column_width=True)
+
+        st.markdown("""
+        **How to read these:**
+        - **Summary plot (left):** Each dot is one prediction. Red = high feature value, blue = low.
+          Dots to the right = positive impact on predicted return. Dots to the left = negative impact.
+        - **Bar plot (right):** Average absolute SHAP value per feature — the higher the bar,
+          the more that feature influences predictions on average.
+        - Features at the top are the most important to the model's decisions.
+        """)
+    else:
+        st.info("SHAP plots not generated yet. Run `python main.py` to generate them.")
+        st.markdown("""
+        **What SHAP does in this project:**
+        - Uses `TreeExplainer` on the XGBoost base learner inside the stacking ensemble
+        - Computes exact Shapley values (not approximations) — possible because XGB is a tree model
+        - Shows which of the 51 features actually drive predictions vs which are noise
+        - Provides individual prediction explanations — "this prediction was +0.3% because RSI was 72 (overbought) and price is 8% above MA200"
+
+        **Why this matters:**
+        - A model that can't explain its predictions is a black box — unusable in any regulated context
+        - SHAP is the industry standard for ML explainability (used at every major tech company)
+        - Interviewers specifically ask about explainability — having it implemented shows production awareness
+        """)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 9 — ARCHITECTURE
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_arch:
     st.subheader("System Architecture & Edge")

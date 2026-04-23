@@ -93,3 +93,45 @@ def predict(request: PredictRequest):
 @app.get("/features")
 def features():
     return {"features": FEATURES, "count": len(FEATURES)}
+
+
+@app.get("/model_info")
+def model_info():
+    """Return model metadata — architecture, features, training info."""
+    import os, json
+    from datetime import datetime
+
+    info: dict = {
+        "model_type":    "ManualStackingRegressor",
+        "architecture":  "XGBoost + LightGBM + RandomForest + ExtraTrees -> Ridge",
+        "target":        "next-day return (%)",
+        "n_features":    len(FEATURES),
+        "features":      FEATURES,
+        "model_loaded":  _model is not None,
+        "model_path":    MODEL_PATH,
+    }
+
+    # Add stored feature names if available
+    if _model is not None and hasattr(_model, "feature_names_"):
+        info["trained_features"]       = _model.feature_names_
+        info["trained_feature_count"]  = len(_model.feature_names_)
+
+    # Add conformal info if available
+    if _model is not None and hasattr(_model, "conformal_"):
+        cp = _model.conformal_
+        info["conformal_alpha"]    = cp.alpha
+        info["conformal_width"]    = cp.interval_width
+        info["conformal_coverage"] = f"{(1 - cp.alpha):.0%} target"
+
+    # Add latest metrics if available
+    metrics_path = os.path.join(ROOT, "outputs", "metrics.json")
+    if os.path.exists(metrics_path):
+        with open(metrics_path) as f:
+            info["latest_metrics"] = json.load(f)
+
+    # Model file modification time as proxy for training date
+    if os.path.exists(MODEL_PATH):
+        mtime = os.path.getmtime(MODEL_PATH)
+        info["model_trained_at"] = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+
+    return info

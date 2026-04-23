@@ -1,8 +1,9 @@
+from __future__ import annotations
 import numpy as np
 import pandas as pd
 
 
-def create_features(df):
+def create_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     # ── Core returns ──────────────────────────────────────────────────────────

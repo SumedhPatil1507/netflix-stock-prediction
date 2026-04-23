@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import sys
 import json
@@ -11,20 +12,20 @@ EXPERIMENT_LOG = os.path.join(OUTPUT_DIR, "experiment_log.csv")
 logger = logging.getLogger(__name__)
 
 
-def create_output_folder():
+def create_output_folder() -> None:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs("models", exist_ok=True)
     os.makedirs("logs", exist_ok=True)
 
 
-def save_metrics(metrics: dict):
+def save_metrics(metrics: dict) -> None:
     path = os.path.join(OUTPUT_DIR, "metrics.json")
     with open(path, "w") as f:
         json.dump(metrics, f, indent=4)
     logger.info(f"Metrics saved -> {path}")
 
 
-def log_experiment(params: dict, metrics: dict):
+def log_experiment(params: dict, metrics: dict) -> None:
     """Append a run to the experiment log CSV."""
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     row = {"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
@@ -40,7 +41,7 @@ def log_experiment(params: dict, metrics: dict):
     logger.info(f"Experiment logged -> {EXPERIMENT_LOG}")
 
 
-def setup_logging(level: str = "INFO"):
+def setup_logging(level: str = "INFO") -> logging.Logger:
     os.makedirs("logs", exist_ok=True)
     log_file = os.path.join("logs", f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
