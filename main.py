@@ -11,19 +11,29 @@ from src.preprocessing import preprocess_data
 from src.feature_engineering import create_features
 from src.modeling import train_model, save_model, get_active_features
 from src.backtest import run_backtest
+from src.model_registry import save_versioned_model
+from src.monitoring import alert_drift, alert_retrain_complete
+
+# Load .env if present
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 
-def main(source: str = "csv", config_path: str = "config.yaml") -> None:
+def main(source: str = "csv", config_path: str = "config.yaml",
+         ticker: str = "NFLX") -> None:
     cfg    = load_config(config_path)
     logger = setup_logging(cfg.log_level)
-    logger.info("Starting Netflix Stock Prediction Pipeline")
+    logger.info(f"Starting Pipeline — ticker={ticker}, source={source}")
 
     create_output_folder()
 
     # ── Load & preprocess ─────────────────────────────────────────────────────
-    logger.info(f"Loading data (source={source})...")
+    logger.info(f"Loading data (source={source}, ticker={ticker})...")
     try:
-        df = load_data(source=source)
+        df = load_data(source=source, ticker=ticker)
         df = preprocess_data(df)
         logger.info(f"Data loaded: {len(df):,} rows, {df.index.min().date()} to {df.index.max().date()}")
     except Exception as e:
@@ -64,8 +74,9 @@ def main(source: str = "csv", config_path: str = "config.yaml") -> None:
         raise
 
     # ── Save model & metrics ──────────────────────────────────────────────────
-    save_model(model)
+    versioned_path = save_versioned_model(model, results, ticker=ticker)
     save_metrics(results)
+    logger.info(f"Model version saved: {versioned_path}")
 
     # ── Cache features for fast Streamlit load ────────────────────────────────
     try:
@@ -81,7 +92,8 @@ def main(source: str = "csv", config_path: str = "config.yaml") -> None:
 
     # ── Experiment log ────────────────────────────────────────────────────────
     log_experiment(
-        params={"source": source, "n_features": len(active_features),
+        params={"source": source, "ticker": ticker,
+                "n_features": len(active_features),
                 "n_rows": len(df), "model": "ManualStacking(XGB+LGBM+RF+ET->Ridge)",
                 "regime_enabled": cfg.regime.enabled},
         metrics=results,
@@ -130,6 +142,7 @@ def main(source: str = "csv", config_path: str = "config.yaml") -> None:
         logger.info(f"Drift: {len(dr['drifted_features'])} features drifted")
         if dr["overall_drift"]:
             logger.warning("Significant overall drift — consider retraining soon")
+            alert_drift(len(dr["drifted_features"]), len(active_features), ticker)
     except Exception as e:
         logger.warning(f"Drift detection skipped: {e}")
 
@@ -143,11 +156,16 @@ def main(source: str = "csv", config_path: str = "config.yaml") -> None:
         logger.warning(f"ARIMA forecast skipped: {e}")
 
     logger.info("Pipeline completed successfully!")
+    # Send retrain complete notification
+    from src.model_registry import get_latest_version
+    alert_retrain_complete(ticker, results, get_latest_version() or "unknown")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Netflix Stock Prediction Pipeline")
     parser.add_argument("--source", choices=["csv", "live"], default="csv")
+    parser.add_argument("--ticker", default=os.getenv("DEFAULT_TICKER", "NFLX"),
+                        help="Stock ticker symbol (default: NFLX)")
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--save-config", action="store_true",
                         help="Write default config.yaml and exit")
@@ -156,4 +174,4 @@ if __name__ == "__main__":
     if args.save_config:
         save_default_config(args.config)
     else:
-        main(source=args.source, config_path=args.config)
+        main(source=args.source, config_path=args.config, ticker=args.ticker)

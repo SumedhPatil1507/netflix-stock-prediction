@@ -4,33 +4,42 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# Default ticker — overridable via config or env
+DEFAULT_TICKER = "NFLX"
 
-def load_data(source: str = "csv") -> pd.DataFrame:
+
+def load_data(source: str = "csv", ticker: str = DEFAULT_TICKER) -> pd.DataFrame:
     """
-    Load Netflix (NFLX) stock data.
+    Load stock OHLCV data for any ticker.
 
     Parameters
     ----------
-    source : "csv"  — load from data/netflix.csv (default, works offline)
-             "live" — pull latest data from Yahoo Finance via yfinance
+    source : "csv"  — load from data/{ticker}.csv (tab-separated)
+             "live" — pull from Yahoo Finance via yfinance
+    ticker : stock ticker symbol (default: NFLX)
     """
     if source == "live":
-        return _load_live()
-    return _load_csv()
+        return _load_live(ticker)
+    return _load_csv(ticker)
 
 
-def _load_csv() -> pd.DataFrame:
-    logger.info("Loading data from data/netflix.csv")
-    df = pd.read_csv("data/netflix.csv", sep="\t")
+def _load_csv(ticker: str = DEFAULT_TICKER) -> pd.DataFrame:
+    path = f"data/{ticker.upper()}.csv"
+    # Fallback to legacy netflix.csv for backward compatibility
+    import os
+    if not os.path.exists(path):
+        path = "data/netflix.csv"
+    logger.info(f"Loading data from {path}")
+    df = pd.read_csv(path, sep="\t")
     return _validate(df)
 
 
-def _load_live() -> pd.DataFrame:
+def _load_live(ticker: str = DEFAULT_TICKER) -> pd.DataFrame:
     try:
         import yfinance as yf
-        logger.info("Fetching live NFLX data from Yahoo Finance...")
-        ticker = yf.Ticker("NFLX")
-        df = ticker.history(period="max")
+        logger.info(f"Fetching live {ticker} data from Yahoo Finance...")
+        t  = yf.Ticker(ticker)
+        df = t.history(period="max")
         df = df.reset_index()
         if hasattr(df["Date"].dtype, "tz") and df["Date"].dtype.tz is not None:
             df["Date"] = df["Date"].dt.tz_localize(None)
@@ -38,14 +47,14 @@ def _load_live() -> pd.DataFrame:
                                   "Low": "Low", "Close": "Close", "Volume": "Volume"})
         df["Stock Splits"] = 0
         df = df[["Date", "Open", "High", "Low", "Close", "Volume", "Stock Splits"]]
-        logger.info(f"Fetched {len(df):,} rows from Yahoo Finance")
+        logger.info(f"Fetched {len(df):,} rows for {ticker}")
         return _validate(df)
     except ImportError:
         logger.warning("yfinance not installed, falling back to CSV")
-        return _load_csv()
+        return _load_csv(ticker)
     except Exception as e:
         logger.warning(f"Live fetch failed ({e}), falling back to CSV")
-        return _load_csv()
+        return _load_csv(ticker)
 
 
 def _validate(df: pd.DataFrame) -> pd.DataFrame:
@@ -57,11 +66,8 @@ def _validate(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     n_before = len(df)
-    # Drop rows where Close is NaN or zero
     df = df[df["Close"].notna() & (df["Close"] > 0)]
-    # Drop rows where High < Low (data error)
     df = df[df["High"] >= df["Low"]]
-    # Drop rows where Volume is negative
     df = df[df["Volume"] >= 0]
 
     dropped = n_before - len(df)

@@ -51,16 +51,15 @@ CACHE_PATH = os.path.join(REPO_ROOT, "outputs", "features_cache.parquet")
 def load_model():
     return joblib.load(MODEL_PATH)
 
-@st.cache_data(ttl=7200, show_spinner="Fetching live NFLX data...")
-def load_live_ohlcv(period: str = "2y") -> pd.DataFrame:
+@st.cache_data(ttl=7200, show_spinner="Fetching live data...")
+def load_live_ohlcv(ticker_sym: str = "NFLX", period: str = "2y") -> pd.DataFrame:
     try:
         import yfinance as yf
-        df = yf.Ticker("NFLX").history(period=period)
+        df = yf.Ticker(ticker_sym).history(period=period)
         if hasattr(df.index.dtype, "tz") and df.index.dtype.tz is not None:
             df.index = df.index.tz_localize(None)
         return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
     except Exception:
-        # Silent fallback — rate limits are expected, CSV is the reliable source
         return None
 
 @st.cache_data(show_spinner="Computing features...")
@@ -82,13 +81,15 @@ except Exception as e:
 
 df_feat   = get_featured_data()
 FEATURES  = model.feature_names_ if hasattr(model, "feature_names_") else get_active_features(df_feat)
-df_live   = load_live_ohlcv("2y")
+df_live   = load_live_ohlcv(ticker, "2y")
 df_source = df_live if df_live is not None else df_feat[["Open","High","Low","Close","Volume"]]
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## NFLX Alpha Engine")
+    st.markdown("## Alpha Engine")
     st.markdown("---")
+    ticker = st.text_input("Ticker", value="NFLX",
+                            help="Any valid Yahoo Finance ticker (NFLX, AAPL, TSLA...)").upper()
     period = st.selectbox("Chart period", ["6mo","1y","2y","5y","max"], index=2)
     st.markdown("---")
     st.markdown("**Model:** XGB + LGBM + RF + ET → Ridge")
@@ -96,13 +97,12 @@ with st.sidebar:
     st.markdown("**Target:** Next-day return (%)")
     st.markdown("**Features:** 51 technical indicators")
     st.markdown("---")
-    # Tests badge
     st.markdown("[![Tests](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/test.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)")
     st.markdown("[GitHub Repo](https://github.com/SumedhPatil1507/netflix-stock-prediction)")
 
 # ── Hero header ───────────────────────────────────────────────────────────────
-st.markdown('<p class="hero-title">NFLX Alpha Engine</p>', unsafe_allow_html=True)
-st.caption("Real-time ML prediction · Backtesting · Sentiment · Risk · Drift Monitor")
+st.markdown('<p class="hero-title">Alpha Engine</p>', unsafe_allow_html=True)
+st.caption(f"Real-time ML prediction · {ticker} · Backtesting · Sentiment · Risk · Drift Monitor")
 
 # ── KPI row ───────────────────────────────────────────────────────────────────
 metrics_path = os.path.join(REPO_ROOT, "outputs", "metrics.json")
@@ -139,17 +139,17 @@ with tab_market:
     st.subheader("Live Market Overview")
 
     @st.cache_data(ttl=7200)
-    def _get_period_data(p):
+    def _get_period_data(ticker_sym: str, p: str):
         try:
             import yfinance as yf
-            df = yf.Ticker("NFLX").history(period=p)
+            df = yf.Ticker(ticker_sym).history(period=p)
             if hasattr(df.index.dtype, "tz") and df.index.dtype.tz is not None:
                 df.index = df.index.tz_localize(None)
             return df[["Open","High","Low","Close","Volume"]].dropna()
         except Exception:
             return df_source
 
-    df_p = _get_period_data(period)
+    df_p = _get_period_data(ticker, period)
 
     # ── Candlestick + Volume ──────────────────────────────────────────────────
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
@@ -248,10 +248,10 @@ with tab_pred:
     st.caption("Auto-filled with live NFLX data. Edit any row or use your own values.")
 
     @st.cache_data(ttl=7200, show_spinner=False)
-    def _live_input():
+    def _live_input(ticker_sym: str):
         try:
             import yfinance as yf
-            df = yf.Ticker("NFLX").history(period="20d")
+            df = yf.Ticker(ticker_sym).history(period="20d")
             if hasattr(df.index.dtype, "tz") and df.index.dtype.tz is not None:
                 df.index = df.index.tz_localize(None)
             df = df[["Open","High","Low","Close","Volume"]].dropna().tail(10).round(2)
@@ -263,7 +263,7 @@ with tab_pred:
                     "Close":[605,610,615,620,625,630,635,640,645,650],
                     "Volume":[5_000_000]*10}
 
-    edited = st.data_editor(pd.DataFrame(_live_input()), num_rows="fixed",
+    edited = st.data_editor(pd.DataFrame(_live_input(ticker)), num_rows="fixed",
                              use_container_width=True, key="pred_input")
 
     if st.button("Predict Next Close", type="primary"):

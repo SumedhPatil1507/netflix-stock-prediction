@@ -1,0 +1,49 @@
+name: Scheduled Retraining
+
+on:
+  schedule:
+    # Every Sunday at 02:00 UTC
+    - cron: "0 2 * * 0"
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: "Ticker to retrain on"
+        required: false
+        default: "NFLX"
+      source:
+        description: "Data source (csv or live)"
+        required: false
+        default: "live"
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run retraining pipeline
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          DEFAULT_TICKER: ${{ github.event.inputs.ticker || 'NFLX' }}
+        run: |
+          python main.py --source ${{ github.event.inputs.source || 'live' }}
+
+      - name: Commit updated model and cache
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f models/model.pkl models/registry.json
+          git add -f outputs/features_cache.parquet outputs/metrics.json
+          git add -f outputs/backtest_curves.csv outputs/rolling_sharpe.csv
+          git diff --staged --quiet || git commit -m "chore: scheduled retrain $(date +'%Y-%m-%d')"
+          git push

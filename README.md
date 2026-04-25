@@ -1,88 +1,130 @@
-# NFLX Alpha Engine
+# Alpha Engine
 
 [![Tests](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/test.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)
+[![Retrain](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/retrain.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-Live-red)](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> End-to-end ML pipeline for Netflix stock return prediction. Stacking ensemble · HMM regime detection · Conformal prediction intervals · Kelly backtesting · Live data · Interactive Plotly dashboard.
+> Production-grade ML system for stock return prediction. Multi-ticker · Stacking ensemble · HMM regime detection · Conformal prediction intervals · Kelly backtesting · Scheduled retraining · Model versioning · Drift monitoring · FastAPI with rate limiting.
 
-**[Launch Live App](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)** | **[Results](RESULTS.md)**
+**[Launch Live App](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)** | **[Results](RESULTS.md)** | **[Contributing](CONTRIBUTING.md)**
 
 ---
 
-## The Edge
+## Production Features
 
-Most stock prediction projects predict **price** — trivially correlated with itself, giving misleading R² > 0.99.
-
-This project predicts **next-day return (%)** — stationary, genuinely hard, no free lunch. The meaningful metric is **directional accuracy** (>52% = real signal) and **Sharpe ratio** of the resulting strategy.
-
-See [RESULTS.md](RESULTS.md) for honest performance numbers and limitations.
+| Feature | Implementation |
+|---|---|
+| Multi-ticker support | Any Yahoo Finance symbol (NFLX, AAPL, TSLA...) |
+| Model versioning | Timestamped saves + JSON registry with rollback |
+| Scheduled retraining | GitHub Actions cron every Sunday 02:00 UTC |
+| Rate limiting | slowapi — 10 req/min per IP on FastAPI |
+| Drift monitoring | PSI + KS test with Slack/email alerting |
+| Secrets management | python-dotenv + .env.example |
+| Conformal intervals | 90% calibrated prediction intervals |
+| Walk-forward CV | No future data leakage |
+| Kelly backtesting | Sharpe/Sortino/Calmar + rolling Sharpe |
+| Paper trading | Day-by-day live deployment simulation |
 
 ---
 
 ## Architecture
 
 ```
-Yahoo Finance (live) ──► data_loader ──► preprocessing
-                                              │
-                                    feature_engineering (51 features)
-                                              │
-                                    regime_detection (HMM 3-state)
-                                              │
-                                    ManualStackingRegressor
-                                    XGB + LGBM + RF + ET → Ridge
-                                              │
-                                    uncertainty (conformal intervals)
-                                              │
-                              ┌───────────────┼───────────────┐
-                           backtest        FastAPI         Streamlit
-                        (Kelly/Sharpe)   (/predict)     (live dashboard)
+Yahoo Finance (any ticker)
+        │
+        ▼
+  data_loader.py  ──── multi-ticker, validation, CSV fallback
+        │
+        ▼
+  feature_engineering.py  ──── 51 technical features
+        │
+        ▼
+  regime_detection.py  ──── HMM Bull/Bear/Sideways
+        │
+        ▼
+  ManualStackingRegressor
+  XGB + LGBM + RF + ET → Ridge
+        │
+        ▼
+  uncertainty.py  ──── conformal prediction intervals
+        │
+        ▼
+  model_registry.py  ──── versioned saves + registry.json
+        │
+        ▼
+  monitoring.py  ──── Slack/email drift + retrain alerts
+        │
+        ├── FastAPI (/predict /health /model_info /registry)
+        ├── Streamlit (9-tab live dashboard)
+        └── GitHub Actions (CI + weekly retraining)
 ```
-
----
-
-## Features (51 total)
-
-| Category | Features |
-|---|---|
-| Lag prices | Lag1–Lag20 |
-| Lag returns | RetLag1–RetLag5 |
-| Rolling stats | RollingMean/Std 5/10, Volatility 5/20, VolRatio |
-| Volume | Volume, Volume_Ratio, OBV_Ratio |
-| Momentum | RSI7/14, MACD+Signal+Hist+Norm, EMA_Cross |
-| Bands | BB_Width, BB_Pct, ATR_Norm |
-| Oscillators | Stoch %K/%D, Williams %R, CCI |
-| Price vs MAs | vs MA5/10/21/50/200 |
-| Momentum ratios | Momentum5/10/20 |
-| Calendar | DayOfWeek, Month, Quarter, EarningsMonth |
-| Regime | Bear/Sideways/Bull probabilities (HMM) |
 
 ---
 
 ## Quick Start
 
 ```bash
-# Install
-pip install -r requirements.txt        # Streamlit Cloud / production
-pip install -r requirements-dev.txt    # Full dev environment
+# Setup
+cp .env.example .env          # fill in optional secrets
+pip install -r requirements-dev.txt
 
-# Train
-make train                             # CSV data
-make train-live                        # Live yfinance data
+# Train (any ticker)
+make train TICKER=NFLX        # CSV data
+make train-live TICKER=AAPL   # live yfinance data
 
-# Run app
-make app                               # Streamlit dashboard
-
-# Run API
-make api                               # FastAPI at localhost:8000/docs
+# Run
+make app                       # Streamlit dashboard
+make api                       # FastAPI at localhost:8000/docs
 
 # Test
-make test                              # pytest
+make test
 
-# Tune hyperparameters
-make tune                              # Optuna (saves to outputs/optuna_best_params.json)
+# View model registry
+make registry
+
+# Paper trade simulation
+make paper-trade
 ```
+
+---
+
+## Environment Variables (.env)
+
+```bash
+SLACK_WEBHOOK_URL=...    # drift/retrain alerts
+SMTP_HOST=...            # email alerts
+ALERT_EMAIL=...
+API_RATE_LIMIT=10        # requests/min per IP
+DEFAULT_TICKER=NFLX
+```
+
+---
+
+## API
+
+```bash
+uvicorn api.main:app --reload
+# Swagger UI: http://localhost:8000/docs
+```
+
+```python
+import requests
+resp = requests.post("http://localhost:8000/predict", json={
+    "ticker": "AAPL",
+    "rows": [{"open":170,"high":175,"low":168,"close":172,"volume":50000000}
+             # ... 10 rows minimum
+    ]
+})
+# Returns: predicted_return_pct, predicted_next_close, signal, confidence_interval
+```
+
+---
+
+## Scheduled Retraining
+
+GitHub Actions runs `main.py --source live` every Sunday at 02:00 UTC, commits the new model and cache, and sends a Slack notification. Trigger manually via Actions → Scheduled Retraining → Run workflow.
 
 ---
 
@@ -90,82 +132,33 @@ make tune                              # Optuna (saves to outputs/optuna_best_pa
 
 ```
 ├── src/
-│   ├── feature_utils.py        # Shared feature computation (single source of truth)
-│   ├── feature_engineering.py  # Full pipeline feature engineering
-│   ├── modeling.py             # ManualStackingRegressor + conformal
-│   ├── regime_detection.py     # Gaussian HMM (Bull/Bear/Sideways)
-│   ├── uncertainty.py          # Conformal prediction intervals
-│   ├── backtest.py             # Kelly sizing, Sharpe/Sortino/Calmar
-│   ├── drift.py                # PSI + KS drift detection
-│   ├── sentiment.py            # VADER news sentiment
-│   ├── tuning.py               # Optuna hyperparameter search
-│   ├── pipeline_config.py      # YAML-driven config dataclasses
-│   └── data_loader.py          # CSV + live yfinance loader
-├── app/app.py                  # Streamlit dashboard (7 tabs, all Plotly)
-├── api/main.py                 # FastAPI (/predict /health /features)
-├── tests/                      # 17 pytest unit tests
-├── notebooks/analysis.ipynb   # Storytelling notebook
-├── config.yaml                 # All hyperparameters
-├── Makefile                    # One-command workflow
-├── RESULTS.md                  # Honest performance numbers
-└── .github/workflows/test.yml  # CI on every push
-```
-
----
-
-## API Usage
-
-```bash
-uvicorn api.main:app --reload
-```
-
-```python
-import requests
-response = requests.post("http://localhost:8000/predict", json={
-    "rows": [
-        {"open": 640, "high": 650, "low": 635, "close": 645, "volume": 5000000}
-        # ... 10 rows minimum
-    ]
-})
-print(response.json())
-# {"predicted_return_pct": 0.12, "predicted_next_close": 645.77,
-#  "last_close": 645.0, "signal": "BUY"}
+│   ├── feature_utils.py      # Shared feature computation (single source of truth)
+│   ├── feature_engineering.py
+│   ├── modeling.py           # ManualStackingRegressor + conformal
+│   ├── model_registry.py     # Versioned model saves + registry
+│   ├── monitoring.py         # Slack/email alerting
+│   ├── regime_detection.py   # HMM Bull/Bear/Sideways
+│   ├── uncertainty.py        # Conformal prediction intervals
+│   ├── backtest.py           # Kelly sizing, Sharpe/Sortino/Calmar
+│   ├── drift.py              # PSI + KS drift detection
+│   ├── sentiment.py          # VADER news sentiment
+│   ├── paper_trade.py        # Paper trading simulation
+│   ├── tuning.py             # Optuna hyperparameter search
+│   └── pipeline_config.py    # YAML config dataclasses
+├── app/app.py                # Streamlit (9 tabs, Plotly, multi-ticker)
+├── api/main.py               # FastAPI (rate limited, multi-ticker)
+├── tests/                    # 30+ pytest unit tests
+├── .github/workflows/
+│   ├── test.yml              # CI on every push
+│   └── retrain.yml           # Weekly scheduled retraining
+├── config.yaml               # All hyperparameters
+├── .env.example              # Secrets template
+├── Makefile                  # One-command workflow
+└── pyproject.toml            # Modern Python packaging
 ```
 
 ---
 
 ## Tech Stack
 
-Python · Pandas · NumPy · Scikit-learn · XGBoost · LightGBM · hmmlearn · SHAP · Statsmodels · Plotly · FastAPI · Streamlit · Pytest · Optuna · GitHub Actions
-
----
-
-## What This Project Demonstrates
-
-| Component | What It Does |
-|---|---|
-| Manual stacking ensemble | XGB + LGBM + RF + ET → Ridge meta-learner via OOF predictions |
-| Walk-forward CV | Time-series aware validation — no future data leakage |
-| Conformal prediction | Calibrated 90% prediction intervals with mathematical coverage guarantee |
-| HMM regime detection | Identifies Bull/Bear/Sideways market states as model features |
-| Kelly criterion backtesting | Position sizing proportional to edge, not binary long/flat |
-| FastAPI serving | Production REST endpoint with Swagger docs |
-| Drift detection | PSI + KS test monitoring for distribution shift |
-| Paper trading simulation | Day-by-day live deployment test with prediction vs actual log |
-| SHAP explainability | Feature-level contribution for every prediction |
-| Optuna tuning | Automated hyperparameter search beyond defaults |
-| GitHub Actions CI | Automated pytest on every push |
-| YAML config system | All hyperparameters in one place, no hardcoded values |
-
----
-
-## Dashboard Tabs
-
-- **Market Overview** — Live candlestick chart, RSI, MACD, Bollinger Bands (Plotly interactive)
-- **Predict** — Auto-fills with live NFLX data, returns predicted return + 90% conformal interval
-- **Backtesting** — Equity curve, rolling Sharpe, drawdown for binary and Kelly strategies
-- **Paper Trade** — Simulates model running day-by-day on live data, logs each prediction vs actual
-- **Sentiment** — VADER-scored Netflix news headlines with daily sentiment chart
-- **Risk** — VaR/CVaR at configurable confidence, volatility surface, correlation matrix
-- **Drift Monitor** — PSI + KS test on all 51 features comparing training vs recent data
-- **Architecture** — System design, design decisions, and honest limitations
+Python · Pandas · NumPy · Scikit-learn · XGBoost · LightGBM · hmmlearn · Statsmodels · Plotly · FastAPI · slowapi · Streamlit · Pytest · Optuna · GitHub Actions · python-dotenv
