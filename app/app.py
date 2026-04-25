@@ -79,12 +79,7 @@ except Exception as e:
     st.error(f"Model not found. Run `python main.py` first.\n\n{e}")
     st.stop()
 
-df_feat   = get_featured_data()
-FEATURES  = model.feature_names_ if hasattr(model, "feature_names_") else get_active_features(df_feat)
-df_live   = load_live_ohlcv(ticker, "2y")
-df_source = df_live if df_live is not None else df_feat[["Open","High","Low","Close","Volume"]]
-
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# ── Sidebar (must come before any ticker-dependent data loads) ────────────────
 with st.sidebar:
     st.markdown("## Alpha Engine")
     st.markdown("---")
@@ -97,6 +92,13 @@ with st.sidebar:
     st.markdown("**Target:** Next-day return (%)")
     st.markdown("**Features:** 51 technical indicators")
     st.markdown("---")
+    st.markdown("[![Tests](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/test.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)")
+    st.markdown("[GitHub Repo](https://github.com/SumedhPatil1507/netflix-stock-prediction)")
+
+df_feat   = get_featured_data()
+FEATURES  = model.feature_names_ if hasattr(model, "feature_names_") else get_active_features(df_feat)
+df_live   = load_live_ohlcv(ticker, "2y")
+df_source = df_live if df_live is not None else df_feat[["Open","High","Low","Close","Volume"]]
     st.markdown("[![Tests](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/test.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)")
     st.markdown("[GitHub Repo](https://github.com/SumedhPatil1507/netflix-stock-prediction)")
 
