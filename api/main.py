@@ -216,3 +216,154 @@ def registry():
         return get_registry()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Risk & Execution endpoints ────────────────────────────────────────────────
+
+class RiskRequest(BaseModel):
+    ticker:           str   = Field("NFLX")
+    pred_return_pct:  float = Field(..., description="Model predicted return (%)")
+    last_price:       float = Field(..., description="Current price")
+    atr:              float = Field(..., description="14-period ATR")
+    portfolio_value:  float = Field(100_000.0, description="Total portfolio ($)")
+    win_rate:         float = Field(0.52, description="Historical win rate (0-1)")
+    avg_win_pct:      float = Field(1.5)
+    avg_loss_pct:     float = Field(1.0)
+    max_position_pct: float = Field(0.05, description="Max position size (0-1)")
+    max_drawdown_halt:float = Field(0.10, description="Circuit breaker drawdown")
+
+
+class ExecuteRequest(BaseModel):
+    ticker:      str   = Field("NFLX")
+    shares:      int   = Field(..., gt=0)
+    side:        str   = Field("buy", description="buy or sell")
+    order_type:  str   = Field("market", description="market or limit")
+    limit_price: Optional[float] = Field(None)
+    broker:      str   = Field("alpaca", description="alpaca | paper")
+
+
+@app.post("/risk/position")
+def compute_risk_position(request: RiskRequest):
+    """
+    Compute execution-ready position size with full risk controls.
+    Returns stop-loss, take-profit, shares, risk per trade.
+    """
+    try:
+        from src.risk_manager import RiskManager, RiskConfig
+        cfg = RiskConfig(
+            portfolio_value    = request.portfolio_value,
+            max_position_pct   = request.max_position_pct,
+            max_drawdown_halt  = request.max_drawdown_halt,
+        )
+        rm    = RiskManager(cfg)
+        order = rm.compute_position(
+            ticker      = request.ticker,
+            pred_return = request.pred_return_pct,
+            last_price  = request.last_price,
+            atr         = request.atr,
+            win_rate    = request.win_rate,
+            avg_win_pct = request.avg_win_pct,
+            avg_loss_pct= request.avg_loss_pct,
+        )
+        return order.to_dict()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/risk/matrix")
+def risk_matrix(request: RiskRequest):
+    """Return full risk matrix for a given prediction."""
+    try:
+        from src.risk_manager import RiskManager, RiskConfig
+        cfg = RiskConfig(portfolio_value=request.portfolio_value,
+                         max_position_pct=request.max_position_pct)
+        rm  = RiskManager(cfg)
+        return rm.risk_matrix(
+            pred_return    = request.pred_return_pct,
+            last_price     = request.last_price,
+            atr            = request.atr,
+            portfolio_value= request.portfolio_value,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/execute")
+def execute_trade(request: ExecuteRequest):
+    """
+    Execute a trade via broker integration.
+    Supports: Alpaca (paper + live), paper simulation.
+
+    Required env vars for Alpaca:
+      ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL
+    """
+    broker = request.broker.lower()
+
+    if broker == "paper":
+        # Simulated paper execution — no real broker needed
+        return {
+            "status":     "filled",
+            "broker":     "paper",
+            "ticker":     request.ticker,
+            "side":       request.side,
+            "shares":     request.shares,
+            "order_type": request.order_type,
+            "fill_price": request.limit_price,
+            "message":    "Paper trade executed (simulation only)",
+        }
+
+    if broker == "alpaca":
+        api_key    = os.getenv("ALPACA_API_KEY")
+        secret_key = os.getenv("ALPACA_SECRET_KEY")
+        base_url   = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+
+        if not api_key or not secret_key:
+            raise HTTPException(
+                status_code=503,
+                detail="Alpaca keys not configured. Set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env"
+            )
+
+        try:
+            import requests as req
+            headers = {
+                "APCA-API-KEY-ID":     api_key,
+                "APCA-API-SECRET-KEY": secret_key,
+                "Content-Type":        "application/json",
+            }
+            body: dict = {
+                "symbol":        request.ticker,
+                "qty":           str(request.shares),
+                "side":          request.side,
+                "type":          request.order_type,
+                "time_in_force": "day",
+            }
+            if request.order_type == "limit" and request.limit_price:
+                body["limit_price"] = str(request.limit_price)
+
+            resp = req.post(f"{base_url}/v2/orders",
+                            json=body, headers=headers, timeout=10)
+
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                return {
+                    "status":     data.get("status", "submitted"),
+                    "broker":     "alpaca",
+                    "order_id":   data.get("id"),
+                    "ticker":     request.ticker,
+                    "side":       request.side,
+                    "shares":     request.shares,
+                    "order_type": request.order_type,
+                    "fill_price": data.get("filled_avg_price"),
+                    "message":    "Order submitted to Alpaca",
+                }
+            else:
+                raise HTTPException(
+                    status_code=resp.status_code,
+                    detail=f"Alpaca error: {resp.text}"
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Execution failed: {e}")
+
+    raise HTTPException(status_code=400, detail=f"Unknown broker: {broker}. Use 'alpaca' or 'paper'")

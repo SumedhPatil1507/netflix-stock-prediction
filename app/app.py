@@ -543,73 +543,151 @@ with tab_sent:
         )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 5 — RISK MANAGEMENT
+# TAB 5 — RISK MANAGEMENT (Position Sizing + VaR + Execution Matrix)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_risk:
-    st.subheader("Risk Management Tools")
+    st.subheader("Risk & Position Management")
+    st.caption("Execution-ready position sizing with stop-loss, take-profit, Kelly fraction, VaR/CVaR, and circuit breaker.")
 
-    df_r = df_feat[["Close","Return","Volatility","ATR_Norm"]].dropna().copy() \
-           if "Return" in df_feat.columns else None
+    # ── Portfolio settings ────────────────────────────────────────────────────
+    with st.expander("Portfolio Settings", expanded=True):
+        rc1, rc2, rc3, rc4 = st.columns(4)
+        portfolio_val   = rc1.number_input("Portfolio ($)", 10_000, 10_000_000, 100_000, 10_000)
+        max_pos_pct     = rc2.slider("Max Position %", 1, 20, 5) / 100
+        max_heat_pct    = rc3.slider("Max Portfolio Heat %", 5, 50, 20) / 100
+        halt_dd_pct     = rc4.slider("Circuit Breaker DD %", 5, 30, 10) / 100
 
-    if df_r is None:
-        st.warning("Feature data not available.")
-    else:
-        ret = df_r["Return"].dropna() / 100
+    # ── Live prediction for risk calc ─────────────────────────────────────────
+    st.markdown("#### Position Sizing Calculator")
+    pr1, pr2, pr3, pr4 = st.columns(4)
+    input_price    = pr1.number_input("Current Price ($)", 1.0, 10000.0, 650.0, 1.0)
+    input_atr      = pr2.number_input("ATR (14-period)", 0.1, 500.0, 15.0, 0.5)
+    input_pred_ret = pr3.number_input("Predicted Return (%)", -10.0, 10.0, 0.5, 0.1)
+    input_win_rate = pr4.slider("Historical Win Rate %", 40, 65, 52) / 100
 
-        # ── VaR & CVaR ────────────────────────────────────────────────────────
+    if st.button("Compute Position", type="primary"):
+        try:
+            from src.risk_manager import RiskManager, RiskConfig
+            cfg = RiskConfig(
+                portfolio_value    = portfolio_val,
+                max_position_pct   = max_pos_pct,
+                max_portfolio_heat = max_heat_pct,
+                max_drawdown_halt  = halt_dd_pct,
+            )
+            rm    = RiskManager(cfg)
+            order = rm.compute_position(
+                ticker      = ticker,
+                pred_return = input_pred_ret,
+                last_price  = input_price,
+                atr         = input_atr,
+                win_rate    = input_win_rate,
+            )
+            matrix = rm.risk_matrix(input_pred_ret, input_price, input_atr, portfolio_val)
+
+            # Signal banner
+            if order.signal == "BUY":
+                st.success(f"Signal: **BUY** — {order.shares} shares @ ${order.entry_price:.2f}")
+            elif order.signal == "HALT":
+                st.error("Circuit breaker triggered — trading halted")
+            else:
+                st.warning(f"Signal: **{order.signal}** — {order.notes}")
+
+            # Position metrics
+            m1, m2, m3, m4, m5, m6 = st.columns(6)
+            m1.metric("Shares",        order.shares)
+            m2.metric("Position ($)",  f"${order.position_value:,.0f}")
+            m3.metric("Stop Loss",     f"${order.stop_loss:.2f}")
+            m4.metric("Take Profit",   f"${order.take_profit:.2f}")
+            m5.metric("Risk/Trade",    f"${order.risk_per_trade:,.0f}")
+            m6.metric("Kelly Frac",    f"{order.kelly_fraction:.3f}")
+
+            # Risk matrix table
+            st.markdown("#### Risk Matrix")
+            matrix_df = pd.DataFrame([matrix]).T.reset_index()
+            matrix_df.columns = ["Parameter", "Value"]
+            st.dataframe(matrix_df, use_container_width=True, hide_index=True)
+
+            # Risk/Reward chart
+            prices = np.linspace(input_price * 0.85, input_price * 1.15, 100)
+            pnl    = (prices - input_price) * order.shares
+            fig_rr = go.Figure()
+            fig_rr.add_trace(go.Scatter(x=prices, y=pnl, mode="lines",
+                                         line=dict(color="#2196f3", width=2), name="P&L"))
+            fig_rr.add_hline(y=0, line_color="white", opacity=0.3)
+            fig_rr.add_vline(x=order.stop_loss,   line_dash="dash", line_color="#e50914",
+                              annotation_text="Stop Loss")
+            fig_rr.add_vline(x=order.take_profit, line_dash="dash", line_color="#00c853",
+                              annotation_text="Take Profit")
+            fig_rr.add_vline(x=input_price,       line_dash="dot",  line_color="white",
+                              annotation_text="Entry")
+            fig_rr.update_layout(template="plotly_dark", height=350,
+                                  title="P&L vs Price (Risk/Reward Diagram)",
+                                  xaxis_title="Price ($)", yaxis_title="P&L ($)",
+                                  margin=dict(l=0, r=0, t=40, b=0))
+            st.plotly_chart(fig_rr, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"Risk calculation error: {e}")
+
+    st.markdown("---")
+
+    # ── VaR / CVaR section ────────────────────────────────────────────────────
+    st.markdown("#### Portfolio Risk Metrics (Historical)")
+    if "Return" in df_feat.columns:
+        ret  = df_feat["Return"].dropna() / 100
         conf = st.slider("Confidence Level", 0.90, 0.99, 0.95, 0.01)
         var  = float(np.percentile(ret, (1 - conf) * 100))
         cvar = float(ret[ret <= var].mean())
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric(f"VaR ({conf:.0%})",  f"{var:.3%}", help="Value at Risk")
-        c2.metric(f"CVaR ({conf:.0%})", f"{cvar:.3%}", help="Conditional VaR (Expected Shortfall)")
-        c3.metric("Ann. Volatility",    f"{ret.std() * np.sqrt(252):.2%}")
-        c4.metric("Sharpe (hist)",
-                  f"{(ret.mean() / ret.std() * np.sqrt(252)):.3f}" if ret.std() > 0 else "N/A")
+        v1, v2, v3, v4 = st.columns(4)
+        v1.metric(f"VaR ({conf:.0%})",  f"{var:.3%}")
+        v2.metric(f"CVaR ({conf:.0%})", f"{cvar:.3%}")
+        v3.metric("Ann. Volatility",    f"{ret.std() * np.sqrt(252):.2%}")
+        v4.metric("Hist. Sharpe",
+                  f"{ret.mean() / ret.std() * np.sqrt(252):.3f}" if ret.std() > 0 else "N/A")
 
-        # ── Return distribution with VaR ──────────────────────────────────────
         fig_dist = go.Figure()
-        fig_dist.add_trace(go.Histogram(x=ret * 100, nbinsx=120, name="Returns",
+        fig_dist.add_trace(go.Histogram(x=ret * 100, nbinsx=120,
                                          marker_color="#2196f3", opacity=0.7))
-        fig_dist.add_vline(x=var * 100, line_dash="dash", line_color="#e50914",
-                            annotation_text=f"VaR {conf:.0%}", annotation_position="top right")
+        fig_dist.add_vline(x=var * 100,  line_dash="dash", line_color="#e50914",
+                            annotation_text=f"VaR {conf:.0%}")
         fig_dist.add_vline(x=cvar * 100, line_dash="dash", line_color="#ff9800",
-                            annotation_text=f"CVaR {conf:.0%}", annotation_position="top left")
-        fig_dist.update_layout(template="plotly_dark", height=350,
-                                title="Return Distribution with VaR / CVaR",
+                            annotation_text=f"CVaR {conf:.0%}")
+        fig_dist.update_layout(template="plotly_dark", height=300,
+                                title="Return Distribution with VaR/CVaR",
                                 xaxis_title="Daily Return (%)",
-                                margin=dict(l=0,r=0,t=40,b=0))
+                                margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig_dist, use_container_width=True)
 
-        # ── Volatility surface (rolling vol over time) ────────────────────────
+    # ── Volatility surface ────────────────────────────────────────────────────
+    if "Return" in df_feat.columns:
+        ret = df_feat["Return"].dropna() / 100
         vol_20  = ret.rolling(20).std()  * np.sqrt(252) * 100
         vol_60  = ret.rolling(60).std()  * np.sqrt(252) * 100
         vol_120 = ret.rolling(120).std() * np.sqrt(252) * 100
-
         fig_vol = go.Figure()
-        fig_vol.add_trace(go.Scatter(x=df_r.index, y=vol_20,  name="20d Vol",
+        fig_vol.add_trace(go.Scatter(x=df_feat.index, y=vol_20,  name="20d",
                                       line=dict(color="#e50914", width=1.5)))
-        fig_vol.add_trace(go.Scatter(x=df_r.index, y=vol_60,  name="60d Vol",
+        fig_vol.add_trace(go.Scatter(x=df_feat.index, y=vol_60,  name="60d",
                                       line=dict(color="#ffd700", width=1.5)))
-        fig_vol.add_trace(go.Scatter(x=df_r.index, y=vol_120, name="120d Vol",
+        fig_vol.add_trace(go.Scatter(x=df_feat.index, y=vol_120, name="120d",
                                       line=dict(color="#00bcd4", width=1.5)))
-        fig_vol.update_layout(template="plotly_dark", height=350,
+        fig_vol.update_layout(template="plotly_dark", height=300,
                                title="Annualised Volatility Surface",
                                yaxis_title="Volatility (%)",
-                               margin=dict(l=0,r=0,t=40,b=0))
+                               margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig_vol, use_container_width=True)
 
-        # ── Correlation matrix ────────────────────────────────────────────────
-        corr_cols = ["Return","RSI","MACD_Norm","BB_Pct","ATR_Norm",
-                     "Volatility","Stoch_K","Williams_R","CCI","Momentum5"]
-        avail = [c for c in corr_cols if c in df_feat.columns]
-        corr  = df_feat[avail].dropna().corr()
-
+    # ── Correlation matrix ────────────────────────────────────────────────────
+    corr_cols = ["Return","RSI","MACD_Norm","BB_Pct","ATR_Norm",
+                 "Volatility","Stoch_K","Williams_R","CCI","Momentum5"]
+    avail = [c for c in corr_cols if c in df_feat.columns]
+    if avail:
+        corr = df_feat[avail].dropna().corr()
         fig_corr = px.imshow(corr, text_auto=".2f", color_continuous_scale="RdBu_r",
                               zmin=-1, zmax=1, title="Feature Correlation Matrix",
-                              template="plotly_dark", height=500)
-        fig_corr.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+                              template="plotly_dark", height=450)
+        fig_corr.update_layout(margin=dict(l=0, r=0, t=40, b=0))
         st.plotly_chart(fig_corr, use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -785,73 +863,86 @@ The directional accuracy metric (>52% = real signal) is what matters, not R².
 
 ---
 
-### Pipeline Architecture
+### Full Pipeline Architecture
 
 ```
-Yahoo Finance (live)
+Data Sources (multi-source)
+  ├── yfinance        — daily/intraday, free
+  ├── Alpha Vantage   — daily + 1min/5min REST, free tier
+  └── Alpaca Markets  — minute bars, free paper account
         │
         ▼
-  data_loader.py  ──── yfinance / CSV fallback
+  data_loader.py  ──── validation, fallback chain
         │
         ▼
-  preprocessing.py ─── date parsing, dedup, sort
+  feature_engineering.py  ──── 51 technical features
         │
         ▼
-  feature_engineering.py
-        │  51 features: lags, RSI, MACD, BB, ATR,
-        │  Stochastic, Williams %R, CCI, OBV,
-        │  EMA cross, momentum, regime probs
-        ▼
-  regime_detection.py ── Gaussian HMM (3 states)
-        │                 Bull / Sideways / Bear
-        ▼
-  modeling.py
-        │  ManualStackingRegressor
-        │  Level-0: XGB + LGBM + RF + ExtraTrees
-        │  Level-1: Ridge meta-learner (OOF)
-        │  RobustScaler inside fit/predict
-        ▼
-  uncertainty.py ── Conformal prediction intervals
-        │            90% coverage guarantee
-        ▼
-  backtest.py ── Binary + Kelly strategies
-        │         Sharpe / Sortino / Calmar
-        ▼
-  drift.py ── PSI + KS test on all features
+  regime_detection.py  ──── HMM Bull/Bear/Sideways
         │
         ▼
-  FastAPI (/predict, /health, /features)
+  ManualStackingRegressor
+  XGB + LGBM + RF + ET → Ridge (OOF stacking)
         │
         ▼
-  Streamlit Cloud (this app)
+  uncertainty.py  ──── conformal prediction intervals (90%)
+        │
+        ▼
+  risk_manager.py  ──── ATR stop-loss, Kelly sizing,
+        │                circuit breaker, portfolio heat
+        ▼
+  model_registry.py  ──── versioned saves + registry.json
+        │
+        ▼
+  monitoring.py  ──── Slack/email drift + retrain alerts
+        │
+        ├── FastAPI v2.0
+        │     /predict        — ML prediction + CI
+        │     /risk/position  — execution-ready position size
+        │     /risk/matrix    — full risk matrix
+        │     /execute        — broker integration (Alpaca/paper)
+        │     /model_info     — version + metrics
+        │     /registry       — model version history
+        │
+        ├── Streamlit (9 tabs, all Plotly interactive)
+        │     Market Overview · Predict · Backtesting
+        │     Paper Trade · Sentiment · Risk Management
+        │     Drift Monitor · Explainability · Architecture
+        │
+        └── GitHub Actions
+              test.yml    — CI on every push
+              retrain.yml — weekly scheduled retraining
 ```
 
 ---
 
-### Why This Stack
+### Design Decisions
 
 | Choice | Reason |
 |---|---|
-| XGB + LGBM + RF + ET stacking | Diversity reduces variance; OOF prevents leakage |
 | Return target (not price) | Stationary; avoids spurious R² from autocorrelation |
+| Manual stacking (not sklearn) | Avoids is_regressor() validator bug with XGB/LGBM |
 | Walk-forward CV | Only valid CV for time-series; no future leakage |
 | Conformal prediction | Calibrated intervals with mathematical coverage guarantee |
-| HMM regime detection | Market dynamics differ across regimes; separate signal |
-| Kelly sizing | Bet proportional to edge; maximises long-run growth |
-| VADER sentiment | Orthogonal signal — price data alone misses news events |
+| HMM regime detection | Market dynamics differ across regimes |
+| ATR-based stop-loss | Adapts to current volatility; tighter in calm markets |
+| Kelly criterion | Bet proportional to edge; maximises long-run growth |
+| Model versioning | Rollback capability; track performance over time |
+| Multi-source data | Fallback chain ensures reliability; intraday capability |
 
 ---
 
-### Limitations (honest)
+### Honest Limitations
 
-- No earnings surprise signal (biggest driver of NFLX moves)
+- No earnings surprise signal (biggest NFLX driver — ±15% moves)
 - Technical indicators are correlated — ~10 independent signals, not 51
-- Model trained on 2002–2026; regime changes may not generalise
-- 15-min delayed Yahoo Finance data — not suitable for intraday
+- 15-min delayed Yahoo Finance data — not suitable for HFT
+- Model trained on 2002–2026; pre-streaming era data may not generalise
+- Alpaca execution is paper-only by default — live trading requires explicit config
 
 ---
 
-### Tests Badge
+### Tests
 [![Tests](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/test.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)
 
 Run locally: `pytest tests/ -v`

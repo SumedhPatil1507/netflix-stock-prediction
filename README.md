@@ -6,59 +6,54 @@
 [![Streamlit](https://img.shields.io/badge/Streamlit-Live-red)](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> Production-grade ML system for stock return prediction. Multi-ticker · Stacking ensemble · HMM regime detection · Conformal prediction intervals · Kelly backtesting · Scheduled retraining · Model versioning · Drift monitoring · FastAPI with rate limiting.
+> Production-grade ML system for stock return prediction with execution-ready risk management and broker integration.
 
-**[Launch Live App](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)** | **[Results](RESULTS.md)** | **[Contributing](CONTRIBUTING.md)**
+**[Live App](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)** | **[Results](RESULTS.md)** | **[Contributing](CONTRIBUTING.md)**
 
 ---
 
-## Production Features
+## What's Inside
 
-| Feature | Implementation |
+| Layer | Implementation |
 |---|---|
-| Multi-ticker support | Any Yahoo Finance symbol (NFLX, AAPL, TSLA...) |
-| Model versioning | Timestamped saves + JSON registry with rollback |
-| Scheduled retraining | GitHub Actions cron every Sunday 02:00 UTC |
-| Rate limiting | slowapi — 10 req/min per IP on FastAPI |
-| Drift monitoring | PSI + KS test with Slack/email alerting |
-| Secrets management | python-dotenv + .env.example |
-| Conformal intervals | 90% calibrated prediction intervals |
-| Walk-forward CV | No future data leakage |
-| Kelly backtesting | Sharpe/Sortino/Calmar + rolling Sharpe |
-| Paper trading | Day-by-day live deployment simulation |
+| **Data** | yfinance · Alpha Vantage (1min/5min) · Alpaca Markets (minute bars) · CSV fallback |
+| **Features** | 51 technical indicators — lags, RSI, MACD, BB, ATR, Stochastic, CCI, OBV, regime |
+| **Model** | XGB + LGBM + RF + ET → Ridge (manual stacking, OOF, walk-forward CV) |
+| **Uncertainty** | Conformal prediction — 90% calibrated intervals |
+| **Risk** | ATR stop-loss · Kelly sizing · portfolio heat · drawdown circuit breaker |
+| **Execution** | `/execute` endpoint — Alpaca paper/live + paper simulation |
+| **Versioning** | Timestamped model saves + JSON registry with rollback |
+| **Retraining** | GitHub Actions cron (weekly) + manual trigger |
+| **Monitoring** | PSI + KS drift detection · Slack/email alerts |
+| **API** | FastAPI v2.0 — rate limited, `/predict` `/risk/position` `/execute` `/registry` |
+| **Dashboard** | 9-tab Streamlit — all Plotly interactive, multi-ticker |
+| **Tests** | 40+ pytest unit tests across all modules |
 
 ---
 
 ## Architecture
 
 ```
-Yahoo Finance (any ticker)
+Data Sources
+  ├── yfinance (daily/intraday)
+  ├── Alpha Vantage (1min–daily, free tier)
+  └── Alpaca Markets (minute bars, paper account)
         │
-        ▼
-  data_loader.py  ──── multi-ticker, validation, CSV fallback
+  data_loader.py → preprocessing → feature_engineering (51 features)
         │
-        ▼
-  feature_engineering.py  ──── 51 technical features
+  regime_detection.py (HMM: Bull/Bear/Sideways)
         │
-        ▼
-  regime_detection.py  ──── HMM Bull/Bear/Sideways
+  ManualStackingRegressor (XGB + LGBM + RF + ET → Ridge)
         │
-        ▼
-  ManualStackingRegressor
-  XGB + LGBM + RF + ET → Ridge
+  uncertainty.py (conformal intervals, 90% coverage)
         │
-        ▼
-  uncertainty.py  ──── conformal prediction intervals
+  risk_manager.py (ATR stop, Kelly, circuit breaker)
         │
-        ▼
-  model_registry.py  ──── versioned saves + registry.json
+  model_registry.py (versioned saves)
         │
-        ▼
-  monitoring.py  ──── Slack/email drift + retrain alerts
-        │
-        ├── FastAPI (/predict /health /model_info /registry)
-        ├── Streamlit (9-tab live dashboard)
-        └── GitHub Actions (CI + weekly retraining)
+  ├── FastAPI: /predict /risk/position /risk/matrix /execute /registry
+  ├── Streamlit: 9 interactive tabs
+  └── GitHub Actions: CI + weekly retraining
 ```
 
 ---
@@ -66,99 +61,109 @@ Yahoo Finance (any ticker)
 ## Quick Start
 
 ```bash
-# Setup
-cp .env.example .env          # fill in optional secrets
+cp .env.example .env          # add API keys
 pip install -r requirements-dev.txt
 
-# Train (any ticker)
-make train TICKER=NFLX        # CSV data
-make train-live TICKER=AAPL   # live yfinance data
+make train                    # train on CSV
+make train-live               # train on live yfinance
+make train-alphavantage       # train on Alpha Vantage data
+make train-alpaca             # train on Alpaca minute bars
 
-# Run
-make app                       # Streamlit dashboard
-make api                       # FastAPI at localhost:8000/docs
-
-# Test
-make test
-
-# View model registry
-make registry
-
-# Paper trade simulation
-make paper-trade
+make app                      # Streamlit dashboard
+make api                      # FastAPI at localhost:8000/docs
+make test                     # run all tests
+make paper-trade              # 90-day paper trade simulation
+make registry                 # view model version history
 ```
 
 ---
 
-## Environment Variables (.env)
+## Data Sources
 
-```bash
-SLACK_WEBHOOK_URL=...    # drift/retrain alerts
-SMTP_HOST=...            # email alerts
-ALERT_EMAIL=...
-API_RATE_LIMIT=10        # requests/min per IP
-DEFAULT_TICKER=NFLX
-```
+| Source | Interval | Key Required | Notes |
+|---|---|---|---|
+| yfinance | daily + intraday | No | Free, rate limited |
+| Alpha Vantage | 1min/5min/daily | `ALPHA_VANTAGE_KEY` | 25 req/day free |
+| Alpaca Markets | 1min–1day | `ALPACA_API_KEY` + `ALPACA_SECRET_KEY` | Free paper account |
+| CSV | daily | No | Offline fallback |
 
 ---
 
-## API
+## API Endpoints
 
 ```bash
 uvicorn api.main:app --reload
-# Swagger UI: http://localhost:8000/docs
+# Swagger: http://localhost:8000/docs
 ```
 
-```python
-import requests
-resp = requests.post("http://localhost:8000/predict", json={
-    "ticker": "AAPL",
-    "rows": [{"open":170,"high":175,"low":168,"close":172,"volume":50000000}
-             # ... 10 rows minimum
-    ]
-})
-# Returns: predicted_return_pct, predicted_next_close, signal, confidence_interval
-```
+| Endpoint | Method | Description |
+|---|---|---|
+| `/predict` | POST | ML prediction + conformal interval |
+| `/risk/position` | POST | Execution-ready position size |
+| `/risk/matrix` | POST | Full risk matrix |
+| `/execute` | POST | Submit order to Alpaca or paper |
+| `/model_info` | GET | Architecture + metrics + version |
+| `/registry` | GET | All model versions |
+| `/health` | GET | Status check |
 
 ---
 
-## Scheduled Retraining
+## Risk Management
 
-GitHub Actions runs `main.py --source live` every Sunday at 02:00 UTC, commits the new model and cache, and sends a Slack notification. Trigger manually via Actions → Scheduled Retraining → Run workflow.
+The `/risk/position` endpoint and Risk tab compute:
+- **ATR-based stop-loss** — adapts to current volatility
+- **Fixed % stop** — hard floor (default 2%)
+- **Take-profit** — 2× stop distance (configurable R:R)
+- **Kelly fraction** — position size proportional to edge
+- **Portfolio heat** — max total open risk (default 20%)
+- **Drawdown circuit breaker** — halts trading at 10% drawdown
+
+---
+
+## Environment Variables
+
+```bash
+# Data sources
+ALPHA_VANTAGE_KEY=...
+ALPACA_API_KEY=...
+ALPACA_SECRET_KEY=...
+ALPACA_BASE_URL=https://paper-api.alpaca.markets
+
+# Alerts
+SLACK_WEBHOOK_URL=...
+ALERT_EMAIL=...
+
+# API
+API_RATE_LIMIT=10
+DEFAULT_TICKER=NFLX
+```
 
 ---
 
 ## Project Structure
 
 ```
-├── src/
-│   ├── feature_utils.py      # Shared feature computation (single source of truth)
-│   ├── feature_engineering.py
-│   ├── modeling.py           # ManualStackingRegressor + conformal
-│   ├── model_registry.py     # Versioned model saves + registry
-│   ├── monitoring.py         # Slack/email alerting
-│   ├── regime_detection.py   # HMM Bull/Bear/Sideways
-│   ├── uncertainty.py        # Conformal prediction intervals
-│   ├── backtest.py           # Kelly sizing, Sharpe/Sortino/Calmar
-│   ├── drift.py              # PSI + KS drift detection
-│   ├── sentiment.py          # VADER news sentiment
-│   ├── paper_trade.py        # Paper trading simulation
-│   ├── tuning.py             # Optuna hyperparameter search
-│   └── pipeline_config.py    # YAML config dataclasses
-├── app/app.py                # Streamlit (9 tabs, Plotly, multi-ticker)
-├── api/main.py               # FastAPI (rate limited, multi-ticker)
-├── tests/                    # 30+ pytest unit tests
-├── .github/workflows/
-│   ├── test.yml              # CI on every push
-│   └── retrain.yml           # Weekly scheduled retraining
-├── config.yaml               # All hyperparameters
-├── .env.example              # Secrets template
-├── Makefile                  # One-command workflow
-└── pyproject.toml            # Modern Python packaging
+src/
+  data_loader.py       # yfinance + Alpha Vantage + Alpaca + CSV
+  feature_utils.py     # shared feature computation
+  modeling.py          # ManualStackingRegressor + conformal
+  risk_manager.py      # ATR stop, Kelly, circuit breaker
+  model_registry.py    # versioned model saves
+  monitoring.py        # Slack/email alerts
+  regime_detection.py  # HMM Bull/Bear/Sideways
+  backtest.py          # Kelly + Sharpe/Sortino/Calmar
+  drift.py             # PSI + KS drift detection
+  paper_trade.py       # day-by-day live simulation
+  sentiment.py         # VADER news scoring
+  tuning.py            # Optuna hyperparameter search
+api/main.py            # FastAPI v2.0
+app/app.py             # Streamlit 9-tab dashboard
+tests/                 # 40+ unit tests
+.github/workflows/     # CI + weekly retraining
 ```
 
 ---
 
 ## Tech Stack
 
-Python · Pandas · NumPy · Scikit-learn · XGBoost · LightGBM · hmmlearn · Statsmodels · Plotly · FastAPI · slowapi · Streamlit · Pytest · Optuna · GitHub Actions · python-dotenv
+Python · XGBoost · LightGBM · Scikit-learn · hmmlearn · Plotly · FastAPI · Streamlit · Optuna · Pytest · GitHub Actions · python-dotenv · yfinance · Alpha Vantage · Alpaca Markets
