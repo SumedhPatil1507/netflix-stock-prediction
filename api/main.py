@@ -6,6 +6,8 @@ Features:
 - Rate limiting (10 req/min per IP via slowapi)
 - Multi-ticker support
 - Model versioning info
+- Authenticated data pipeline (Alpaca → Alpha Vantage → TimescaleDB/SQLite)
+- Async task routing via Celery + Redis
 - /health, /predict, /features, /model_info, /tickers endpoints
 """
 from __future__ import annotations
@@ -116,9 +118,9 @@ def health():
 
 @app.get("/tickers")
 def tickers():
-    """List of supported tickers (any valid yfinance symbol)."""
+    """List of supported tickers."""
     return {
-        "note":    "Any valid Yahoo Finance ticker is supported via live data",
+        "note":    "Any ticker supported by Alpaca or Alpha Vantage",
         "popular": ["NFLX", "AAPL", "TSLA", "GOOGL", "MSFT", "AMZN", "META"],
     }
 
@@ -300,7 +302,6 @@ def execute_trade(request: ExecuteRequest):
     broker = request.broker.lower()
 
     if broker == "paper":
-        # Simulated paper execution — no real broker needed
         return {
             "status":     "filled",
             "broker":     "paper",
@@ -367,3 +368,355 @@ def execute_trade(request: ExecuteRequest):
             raise HTTPException(status_code=500, detail=f"Execution failed: {e}")
 
     raise HTTPException(status_code=400, detail=f"Unknown broker: {broker}. Use 'alpaca' or 'paper'")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MARKET DATA ENDPOINTS
+# Uses src.data_loader (Alpaca → Alpha Vantage → TimescaleDB/SQLite)
+# yfinance has been removed from all market endpoints.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _load_ohlcv_df(ticker: str, days_back: int = 500) -> pd.DataFrame:
+    """
+    Unified OHLCV loader: Alpaca → Alpha Vantage → TimescaleDB/SQLite.
+    Never calls yfinance.
+    """
+    from src.data_loader import load_data
+    df = load_data(source="database", ticker=ticker, days_back=days_back)
+    if df.empty:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"No market data for {ticker}. "
+                "Set ALPACA_API_KEY + ALPACA_SECRET_KEY to bootstrap from Alpaca, "
+                "or ALPHA_VANTAGE_KEY for Alpha Vantage."
+            ),
+        )
+    # Ensure proper column casing
+    df.columns = [c.capitalize() if c.lower() in {"open","high","low","close","volume"}
+                  else c for c in df.columns]
+    return df
+
+
+@app.get("/market/ohlcv")
+def get_ohlcv(ticker: str = "NFLX", period: str = "2y"):
+    """Return OHLCV bars for any ticker as JSON records (no yfinance)."""
+    days_map = {"1mo": 35, "3mo": 95, "6mo": 185, "1y": 370, "2y": 740, "5y": 1830}
+    days_back = days_map.get(period, 740)
+    try:
+        df = _load_ohlcv_df(ticker, days_back)
+        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        # Strip tz from index if present
+        if hasattr(df.index, "tz") and df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        return {
+            "ticker": ticker,
+            "period": period,
+            "source": "alpaca/alphavantage/timescaledb",
+            "dates":  [str(d.date()) for d in df.index],
+            "open":   df["Open"].round(4).tolist(),
+            "high":   df["High"].round(4).tolist(),
+            "low":    df["Low"].round(4).tolist(),
+            "close":  df["Close"].round(4).tolist(),
+            "volume": df["Volume"].tolist(),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/market/indicators")
+def get_indicators(ticker: str = "NFLX", period: str = "1y"):
+    """Return pre-computed RSI, MACD, Bollinger — computed from authenticated pipeline data."""
+    days_map = {"1mo": 35, "3mo": 95, "6mo": 185, "1y": 370, "2y": 740}
+    days_back = days_map.get(period, 370)
+    try:
+        df    = _load_ohlcv_df(ticker, days_back)
+        close = df["Close"].dropna()
+        if hasattr(close.index, "tz") and close.index.tz is not None:
+            close.index = close.index.tz_localize(None)
+        dates = [str(d.date()) for d in close.index]
+
+        # RSI
+        delta = close.diff()
+        gain  = delta.clip(lower=0).rolling(14).mean()
+        loss  = (-delta.clip(upper=0)).rolling(14).mean()
+        rsi   = (100 - 100 / (1 + gain / loss.replace(0, np.nan))).fillna(50)
+
+        # MACD
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd  = ema12 - ema26
+        sig   = macd.ewm(span=9, adjust=False).mean()
+        hist  = macd - sig
+
+        # Bollinger
+        bb_mid = close.rolling(20).mean()
+        bb_std = close.rolling(20).std()
+        bb_up  = (bb_mid + 2 * bb_std).fillna(0)
+        bb_lo  = (bb_mid - 2 * bb_std).fillna(0)
+
+        return {
+            "ticker":    ticker,
+            "source":    "alpaca/alphavantage/timescaledb",
+            "dates":     dates,
+            "close":     close.round(4).tolist(),
+            "rsi":       rsi.round(4).tolist(),
+            "macd":      macd.fillna(0).round(4).tolist(),
+            "macd_sig":  sig.fillna(0).round(4).tolist(),
+            "macd_hist": hist.fillna(0).round(4).tolist(),
+            "bb_mid":    bb_mid.fillna(0).round(4).tolist(),
+            "bb_upper":  bb_up.round(4).tolist(),
+            "bb_lower":  bb_lo.round(4).tolist(),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/market/live_input")
+def get_live_input(ticker: str = "NFLX", n: int = 10):
+    """Return the last N OHLCV rows for the predict tab (no yfinance)."""
+    try:
+        df = _load_ohlcv_df(ticker, days_back=30)
+        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna().tail(n).round(2)
+        return df.reset_index(drop=True).to_dict("list")
+    except HTTPException:
+        # Graceful degradation with synthetic fallback
+        return {
+            "Open":   [600.0] * n, "High":   [610.0] * n,
+            "Low":    [595.0] * n, "Close":  [605.0] * n,
+            "Volume": [5_000_000] * n,
+        }
+    except Exception:
+        return {
+            "Open":   [600.0] * n, "High":   [610.0] * n,
+            "Low":    [595.0] * n, "Close":  [605.0] * n,
+            "Volume": [5_000_000] * n,
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SENTIMENT ENDPOINT
+# Uses Alpha Vantage News API when key is available, else returns cached/empty
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/sentiment")
+def get_sentiment(ticker: str = "NFLX"):
+    """
+    Fetch news sentiment. Uses Alpha Vantage NEWS_SENTIMENT endpoint when
+    ALPHA_VANTAGE_KEY is set; falls back to an empty result set otherwise.
+    """
+    try:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+        sia   = SentimentIntensityAnalyzer()
+        rows  = []
+
+        av_key = os.getenv("ALPHA_VANTAGE_KEY")
+        if av_key:
+            import requests as req
+            resp = req.get(
+                "https://www.alphavantage.co/query",
+                params={
+                    "function": "NEWS_SENTIMENT",
+                    "tickers":  ticker,
+                    "apikey":   av_key,
+                    "limit":    50,
+                },
+                timeout=10,
+            )
+            news_items = resp.json().get("feed", [])
+            for item in news_items:
+                ts    = pd.Timestamp(item.get("time_published", ""), format="%Y%m%dT%H%M%S", errors="coerce")
+                title = item.get("title", "")
+                score = sia.polarity_scores(title)["compound"]
+                rows.append({
+                    "date":      str(ts.date()) if not pd.isna(ts) else "unknown",
+                    "title":     title,
+                    "score":     score,
+                    "sentiment": ("Positive" if score > 0.05
+                                  else "Negative" if score < -0.05 else "Neutral"),
+                    "source":    item.get("source", ""),
+                })
+        else:
+            logger.warning("ALPHA_VANTAGE_KEY not set — sentiment endpoint returning empty results")
+
+        avg_score = round(sum(r["score"] for r in rows) / len(rows), 4) if rows else 0.0
+        return {
+            "ticker":    ticker,
+            "source":    "alpha_vantage_news" if av_key else "unavailable",
+            "items":     rows,
+            "avg_score": avg_score,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DRIFT ENDPOINT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/drift")
+def get_drift(ticker: str = "NFLX"):
+    try:
+        cache = os.path.join(ROOT, "outputs", "features_cache.parquet")
+        if not os.path.exists(cache):
+            raise HTTPException(status_code=404, detail="Run python main.py first")
+        df = pd.read_parquet(cache)
+        from src.drift import detect_drift, drift_summary_df
+        split = int(len(df) * 0.8)
+        dr  = detect_drift(df.iloc[:split], df.iloc[split:], FEATURES)
+        ddf = drift_summary_df(dr)
+        return {
+            "overall_drift":    dr["overall_drift"],
+            "n_drifted":        len(dr["drifted_features"]),
+            "drifted_features": dr["drifted_features"],
+            "psi_threshold":    dr["psi_threshold"],
+            "table": ddf.to_dict("records"),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXPLAINABILITY ENDPOINT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/explainability/importance")
+def feature_importance():
+    if _model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    try:
+        feat_cols = getattr(_model, "feature_names_", FEATURES)
+        imps, count = None, 0
+        for name, est in _model.fitted_learners_:
+            if hasattr(est, "feature_importances_"):
+                fi = np.array(est.feature_importances_[:len(feat_cols)], dtype=np.float64)
+                imps = fi if imps is None else imps + fi
+                count += 1
+        if imps is None:
+            raise HTTPException(status_code=500, detail="No importances available")
+        imps /= count
+        idx = np.argsort(imps)[::-1]
+        return {
+            "features":    [feat_cols[i] for i in idx],
+            "importances": imps[idx].tolist(),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ASYNC TASK ROUTING (Celery + Redis)
+# Heavy CPU-bound work is offloaded; caller gets job_id instantly.
+# Streamlit polls /api/v1/tasks/{job_id} every 2 seconds.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class BacktestTaskRequest(BaseModel):
+    ticker: str = "NFLX"
+    days:   int = Field(90, ge=10, le=365)
+
+
+class DriftTaskRequest(BaseModel):
+    ticker: str = "NFLX"
+
+
+class ConformalTaskRequest(BaseModel):
+    ticker:      str = "NFLX"
+    n_intervals: int = Field(10_000, ge=100, le=50_000,
+                             description="Number of conformal intervals to compute")
+    window_days: int = Field(252, ge=60, le=1000,
+                             description="Rolling window size in trading days")
+
+
+def _celery_app():
+    try:
+        from worker.celery_app import celery
+        return celery
+    except ImportError:
+        raise HTTPException(status_code=503,
+                            detail="Celery worker not running. Start with: "
+                                   "celery -A worker.celery_app worker --loglevel=info")
+
+
+@app.post("/api/v1/tasks/backtest")
+def submit_backtest(req: BacktestTaskRequest):
+    """Submit a backtest simulation. Returns job_id immediately."""
+    _celery_app()  # validate worker reachable
+    from worker.tasks import run_backtest_task
+    job = run_backtest_task.apply_async(
+        kwargs={"ticker": req.ticker, "days": req.days}
+    )
+    return {"job_id": job.id, "state": "PENDING",
+            "message": f"Backtest queued for {req.ticker} ({req.days} days)"}
+
+
+@app.post("/api/v1/tasks/paper_trade")
+def submit_paper_trade(req: BacktestTaskRequest):
+    """Submit a paper trade simulation. Returns job_id immediately."""
+    _celery_app()
+    from worker.tasks import run_paper_trade_task
+    job = run_paper_trade_task.apply_async(
+        kwargs={"ticker": req.ticker, "days": req.days}
+    )
+    return {"job_id": job.id, "state": "PENDING",
+            "message": f"Paper trade queued for {req.ticker} ({req.days} days)"}
+
+
+@app.post("/api/v1/tasks/drift")
+def submit_drift(req: DriftTaskRequest):
+    """Submit drift check. Returns job_id immediately."""
+    _celery_app()
+    from worker.tasks import run_drift_task
+    job = run_drift_task.apply_async(kwargs={"ticker": req.ticker})
+    return {"job_id": job.id, "state": "PENDING",
+            "message": f"Drift check queued for {req.ticker}"}
+
+
+@app.post("/api/v1/tasks/conformal")
+def submit_conformal(req: ConformalTaskRequest):
+    """
+    Submit a batch conformal prediction interval computation.
+    CPU-bound: computes up to 10,000 rolling conformal intervals.
+    Returns job_id immediately; Streamlit polls every 2 seconds.
+    """
+    _celery_app()
+    from worker.tasks import run_conformal_task
+    job = run_conformal_task.apply_async(
+        kwargs={
+            "ticker":      req.ticker,
+            "n_intervals": req.n_intervals,
+            "window_days": req.window_days,
+        }
+    )
+    return {
+        "job_id":  job.id,
+        "state":   "PENDING",
+        "message": f"Conformal batch ({req.n_intervals:,} intervals) queued for {req.ticker}",
+    }
+
+
+@app.get("/api/v1/tasks/{job_id}")
+def get_task_status(job_id: str):
+    """
+    Poll task state. Streamlit polls this every 2 seconds.
+    Returns: {state: PENDING|PROGRESS|SUCCESS|FAILURE, result: ..., error: ...}
+    """
+    try:
+        from worker.celery_app import celery
+        res = celery.AsyncResult(job_id)
+        if res.state == "SUCCESS":
+            return {"state": "SUCCESS", "result": res.result}
+        if res.state == "FAILURE":
+            return {"state": "FAILURE", "error": str(res.info)}
+        if res.state == "PROGRESS":
+            return {"state": "PROGRESS", "meta": res.info}
+        return {"state": res.state}
+    except Exception as e:
+        return {"state": "ERROR", "error": str(e)}

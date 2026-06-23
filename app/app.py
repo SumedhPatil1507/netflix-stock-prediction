@@ -1,954 +1,543 @@
+"""
+Alpha Engine — Streamlit Dashboard (Pure Presentation Layer)
+
+NO src.* imports. NO direct model/broker calls.
+All data comes from the FastAPI backend via app/api_client.py.
+Heavy tasks use async job polling (Celery + Redis via FastAPI).
+"""
+import time
 import streamlit as st
-import joblib
 import pandas as pd
 import numpy as np
-import os, sys, json
-
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-os.chdir(REPO_ROOT)
-sys.path.insert(0, REPO_ROOT)
-
-from src.modeling import get_active_features
-from src.feature_utils import build_prediction_row
-
-# ── Page config ───────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="NFLX Alpha Engine",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded",
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(__file__))
+from api_client import (
+    health, get_ohlcv, get_indicators, get_live_input,
+    predict, get_model_info, get_sentiment, get_drift_report,
+    get_feature_importance, compute_risk_position, compute_risk_matrix,
+    execute_trade, submit_backtest, submit_paper_trade,
+    submit_drift_check, get_task_result, poll_until_done,
 )
 
-# ── Custom CSS ────────────────────────────────────────────────────────────────
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Alpha Engine", page_icon="📈",
+                   layout="wide", initial_sidebar_state="expanded")
+
 st.markdown("""
 <style>
-.metric-card {
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-    border: 1px solid #e50914;
-    border-radius: 10px;
-    padding: 15px;
-    text-align: center;
-}
-.hero-title {
-    font-size: 2.5rem;
-    font-weight: 800;
-    background: linear-gradient(90deg, #e50914, #ff6b6b);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-}
-</style>
-""", unsafe_allow_html=True)
+.hero-title{font-size:2.2rem;font-weight:800;
+  background:linear-gradient(90deg,#e50914,#ff6b6b);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent}
+</style>""", unsafe_allow_html=True)
 
-MODEL_PATH = os.path.join(REPO_ROOT, "models", "model.pkl")
-CACHE_PATH = os.path.join(REPO_ROOT, "outputs", "features_cache.parquet")
-
-# ── Data & model loaders ──────────────────────────────────────────────────────
-@st.cache_resource(show_spinner="Loading model...")
-def load_model():
-    return joblib.load(MODEL_PATH)
-
-@st.cache_data(ttl=7200, show_spinner="Fetching live data...")
-def load_live_ohlcv(ticker_sym: str = "NFLX", period: str = "2y") -> pd.DataFrame:
-    try:
-        from src.data_loader import load_data
-        days_map = {"6mo": 180, "1y": 365, "2y": 730, "5y": 1825, "max": 5000}
-        days_back = days_map.get(period, 730)
-        df = load_data(source="database", ticker=ticker_sym, days_back=days_back)
-        if not df.empty:
-            return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
-        return None
-    except Exception:
-        return None
-
-@st.cache_data(show_spinner="Computing/Retrieving features...")
-def get_featured_data(ticker_sym: str = "NFLX"):
-    from src.features_redis import get_cached_features
-    df = get_cached_features(ticker_sym)
-    if df is not None and not df.empty:
-        return df
-    from src.data_loader import load_data
-    from src.preprocessing import preprocess_data
-    from src.feature_engineering import create_features
-    df = load_data(source="database", ticker=ticker_sym)
-    df = preprocess_data(df)
-    df_feat = create_features(df)
-    from src.features_redis import cache_features
-    cache_features(df_feat, ticker_sym)
-    return df_feat
-
-try:
-    model = load_model()
-except Exception as e:
-    st.error(f"Model not found. Run `python main.py` first.\n\n{e}")
-    st.stop()
-
-# ── Sidebar (must come before any ticker-dependent data loads) ────────────────
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## Alpha Engine")
     st.markdown("---")
     ticker = st.text_input("Ticker", value="NFLX",
-                            help="Any valid Yahoo Finance ticker (NFLX, AAPL, TSLA...)").upper()
+                            help="Any Yahoo Finance ticker").upper()
     period = st.selectbox("Chart period", ["6mo","1y","2y","5y","max"], index=2)
     st.markdown("---")
-    st.markdown("**Model:** XGB + LGBM + RF + ET → Ridge")
-    st.markdown("**Validation:** Walk-forward CV")
-    st.markdown("**Target:** Next-day return (%)")
-    st.markdown("**Features:** 51 technical indicators")
+    api_status = health()
+    if "error" in api_status:
+        st.error(f"API offline: {api_status['error']}")
+        st.info("Start backend: `make api`")
+    else:
+        st.success(f"API v{api_status.get('version','?')} online")
     st.markdown("---")
-    st.markdown("[![Tests](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/test.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)")
-    st.markdown("[GitHub Repo](https://github.com/SumedhPatil1507/netflix-stock-prediction)")
+    st.markdown("**Model:** XGB+LGBM+RF+ET → Ridge")
+    st.markdown("**Target:** Next-day return (%)")
+    st.markdown("[GitHub](https://github.com/SumedhPatil1507/netflix-stock-prediction)")
 
-df_feat   = get_featured_data(ticker)
-FEATURES  = model.feature_names_ if hasattr(model, "feature_names_") else get_active_features(df_feat)
-df_live   = load_live_ohlcv(ticker, "2y")
-df_source = df_live if df_live is not None else df_feat[["Open","High","Low","Close","Volume"]]
-
-# ── Hero header ───────────────────────────────────────────────────────────────
+# ── Hero & KPIs ───────────────────────────────────────────────────────────────
 st.markdown('<p class="hero-title">Alpha Engine</p>', unsafe_allow_html=True)
-st.caption(f"Real-time ML prediction · {ticker} · Backtesting · Sentiment · Risk · Drift Monitor")
+st.caption(f"Presentation layer — all data via FastAPI backend · {ticker}")
 
-# ── KPI row ───────────────────────────────────────────────────────────────────
-metrics_path = os.path.join(REPO_ROOT, "outputs", "metrics.json")
-if os.path.exists(metrics_path):
-    with open(metrics_path) as f:
-        m = json.load(f)
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Directional Acc", f"{m.get('Dir_Acc', 0):.1f}%", help="% correct up/down predictions")
-    c2.metric("CV R²", f"{m.get('CV_R2', 0):.4f}", help="Walk-forward cross-validation R²")
-    c3.metric("CP Coverage", f"{m.get('CP_Coverage', 0):.1%}", help="Conformal prediction interval coverage")
-    c4.metric("CP Width", f"{m.get('CP_Width', 0):.2f}%", help="90% prediction interval width")
-    c5.metric("CV RMSE", f"{m.get('CV_RMSE', 0):.4f}", help="Walk-forward CV RMSE on returns")
+@st.cache_data(ttl=300)
+def _model_info(): return get_model_info()
+
+info = _model_info()
+if "latest_metrics" in info:
+    m  = info["latest_metrics"]
+    c1,c2,c3,c4,c5 = st.columns(5)
+    c1.metric("Dir Acc",    f"{m.get('Dir_Acc',0):.1f}%")
+    c2.metric("CV R²",      f"{m.get('CV_R2',0):.4f}")
+    c3.metric("CP Coverage",f"{m.get('CP_Coverage',0):.1%}")
+    c4.metric("CP Width",   f"{m.get('CP_Width',0):.2f}%")
+    c5.metric("CV RMSE",    f"{m.get('CV_RMSE',0):.4f}")
 
 st.markdown("---")
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tabs = st.tabs([
-    "🕯 Market Overview",
-    "🔮 Predict",
-    "📈 Backtesting",
-    "📋 Paper Trade",
-    "🧠 Sentiment",
-    "⚠️ Risk",
-    "🔬 Drift Monitor",
-    "🔍 Explainability",
-    "🏗 Architecture",
+    "🕯 Market","🔮 Predict","📈 Backtest","📋 Paper Trade",
+    "🧠 Sentiment","⚠️ Risk","🔬 Drift","🔍 Explainability","🏗 Architecture"
 ])
-tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk, tab_drift, tab_shap, tab_arch = tabs
+tab_mkt,tab_pred,tab_bt,tab_paper,tab_sent,tab_risk,tab_drift,tab_xp,tab_arch = tabs
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — MARKET OVERVIEW (Candlestick + indicators)
+# TAB 1 — MARKET OVERVIEW
 # ═══════════════════════════════════════════════════════════════════════════════
-with tab_market:
-    st.subheader("Live Market Overview")
+with tab_mkt:
+    st.subheader(f"Market Overview — {ticker}")
 
     @st.cache_data(ttl=7200)
-    def _get_period_data(ticker_sym: str, p: str):
-        try:
-            from src.data_loader import load_data
-            days_map = {"6mo": 180, "1y": 365, "2y": 730, "5y": 1825, "max": 5000}
-            days_back = days_map.get(p, 730)
-            df = load_data(source="database", ticker=ticker_sym, days_back=days_back)
-            return df[["Open","High","Low","Close","Volume"]].dropna()
-        except Exception:
-            return df_source
+    def _ohlcv(t, p): return get_ohlcv(t, p)
 
-    df_p = _get_period_data(ticker, period)
+    data = _ohlcv(ticker, period)
+    if "error" in data:
+        st.error(data["error"])
+    else:
+        dates = data["dates"]
+        fig = make_subplots(rows=2,cols=1,shared_xaxes=True,
+                            row_heights=[0.75,0.25],vertical_spacing=0.03)
+        fig.add_trace(go.Candlestick(x=dates,open=data["open"],high=data["high"],
+            low=data["low"],close=data["close"],name=ticker,
+            increasing_line_color="#00c853",decreasing_line_color="#e50914"),row=1,col=1)
+        for w,col in [(20,"#ffd700"),(50,"#00bcd4"),(200,"#ff9800")]:
+            closes = pd.Series(data["close"])
+            ma = closes.rolling(w).mean()
+            fig.add_trace(go.Scatter(x=dates,y=ma,name=f"MA{w}",
+                line=dict(color=col,width=1)),row=1,col=1)
+        colors = ["#00c853" if c>=o else "#e50914"
+                  for c,o in zip(data["close"],data["open"])]
+        fig.add_trace(go.Bar(x=dates,y=data["volume"],name="Vol",
+            marker_color=colors,opacity=0.6),row=2,col=1)
+        fig.update_layout(template="plotly_dark",height=550,
+            xaxis_rangeslider_visible=False,margin=dict(l=0,r=0,t=20,b=0))
+        st.plotly_chart(fig,use_container_width=True)
 
-    # ── Candlestick + Volume ──────────────────────────────────────────────────
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        row_heights=[0.75, 0.25], vertical_spacing=0.03)
+    @st.cache_data(ttl=7200)
+    def _ind(t): return get_indicators(t)
 
-    fig.add_trace(go.Candlestick(
-        x=df_p.index, open=df_p["Open"], high=df_p["High"],
-        low=df_p["Low"], close=df_p["Close"],
-        name="NFLX", increasing_line_color="#00c853",
-        decreasing_line_color="#e50914",
-    ), row=1, col=1)
+    ind = _ind(ticker)
+    if "error" not in ind:
+        col1,col2 = st.columns(2)
+        with col1:
+            fig_r = go.Figure()
+            fig_r.add_trace(go.Scatter(x=ind["dates"],y=ind["rsi"],
+                name="RSI",line=dict(color="#9c27b0",width=1.5)))
+            fig_r.add_hline(y=70,line_dash="dash",line_color="red",opacity=0.6)
+            fig_r.add_hline(y=30,line_dash="dash",line_color="green",opacity=0.6)
+            fig_r.update_layout(template="plotly_dark",height=240,
+                title="RSI (14)",margin=dict(l=0,r=0,t=30,b=0))
+            st.plotly_chart(fig_r,use_container_width=True)
+        with col2:
+            fig_m = go.Figure()
+            fig_m.add_trace(go.Scatter(x=ind["dates"],y=ind["macd"],
+                name="MACD",line=dict(color="#2196f3",width=1.5)))
+            fig_m.add_trace(go.Scatter(x=ind["dates"],y=ind["macd_sig"],
+                name="Signal",line=dict(color="#ff9800",width=1.5)))
+            colors_h = ["#00c853" if v>=0 else "#e50914" for v in ind["macd_hist"]]
+            fig_m.add_trace(go.Bar(x=ind["dates"],y=ind["macd_hist"],
+                marker_color=colors_h,opacity=0.5,name="Hist"))
+            fig_m.update_layout(template="plotly_dark",height=240,
+                title="MACD",margin=dict(l=0,r=0,t=30,b=0))
+            st.plotly_chart(fig_m,use_container_width=True)
 
-    # Moving averages
-    for w, color in [(20,"#ffd700"),(50,"#00bcd4"),(200,"#ff9800")]:
-        ma = df_p["Close"].rolling(w).mean()
-        fig.add_trace(go.Scatter(x=df_p.index, y=ma, name=f"MA{w}",
-                                  line=dict(color=color, width=1)), row=1, col=1)
-
-    # Volume bars
-    colors = ["#00c853" if c >= o else "#e50914"
-              for c, o in zip(df_p["Close"], df_p["Open"])]
-    fig.add_trace(go.Bar(x=df_p.index, y=df_p["Volume"], name="Volume",
-                          marker_color=colors, opacity=0.6), row=2, col=1)
-
-    fig.update_layout(
-        template="plotly_dark", height=600,
-        xaxis_rangeslider_visible=False,
-        legend=dict(orientation="h", y=1.02),
-        margin=dict(l=0, r=0, t=30, b=0),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # ── RSI + MACD ────────────────────────────────────────────────────────────
-    col1, col2 = st.columns(2)
-
-    with col1:
-        delta = df_p["Close"].diff()
-        gain  = delta.clip(lower=0).rolling(14).mean()
-        loss  = (-delta.clip(upper=0)).rolling(14).mean()
-        rsi   = 100 - (100 / (1 + gain / loss.replace(0, np.nan)))
-
-        fig_rsi = go.Figure()
-        fig_rsi.add_trace(go.Scatter(x=df_p.index, y=rsi, name="RSI",
-                                      line=dict(color="#9c27b0", width=1.5)))
-        fig_rsi.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.6)
-        fig_rsi.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.6)
-        fig_rsi.add_hrect(y0=30, y1=70, fillcolor="gray", opacity=0.05)
-        fig_rsi.update_layout(template="plotly_dark", height=250,
-                               title="RSI (14)", margin=dict(l=0,r=0,t=30,b=0))
-        st.plotly_chart(fig_rsi, use_container_width=True)
-
-    with col2:
-        ema12 = df_p["Close"].ewm(span=12, adjust=False).mean()
-        ema26 = df_p["Close"].ewm(span=26, adjust=False).mean()
-        macd  = ema12 - ema26
-        sig   = macd.ewm(span=9, adjust=False).mean()
-        hist  = macd - sig
-
-        fig_macd = make_subplots(rows=1, cols=1)
-        fig_macd.add_trace(go.Scatter(x=df_p.index, y=macd, name="MACD",
-                                       line=dict(color="#2196f3", width=1.5)))
-        fig_macd.add_trace(go.Scatter(x=df_p.index, y=sig, name="Signal",
-                                       line=dict(color="#ff9800", width=1.5)))
-        fig_macd.add_trace(go.Bar(x=df_p.index, y=hist, name="Histogram",
-                                   marker_color=["#00c853" if v >= 0 else "#e50914" for v in hist],
-                                   opacity=0.6))
-        fig_macd.update_layout(template="plotly_dark", height=250,
-                                title="MACD", margin=dict(l=0,r=0,t=30,b=0))
-        st.plotly_chart(fig_macd, use_container_width=True)
-
-    # ── Bollinger Bands ───────────────────────────────────────────────────────
-    bb_mid = df_p["Close"].rolling(20).mean()
-    bb_std = df_p["Close"].rolling(20).std()
-    bb_up  = bb_mid + 2 * bb_std
-    bb_lo  = bb_mid - 2 * bb_std
-
-    fig_bb = go.Figure()
-    fig_bb.add_trace(go.Scatter(x=df_p.index, y=bb_up, name="Upper",
-                                 line=dict(color="red", dash="dash", width=1)))
-    fig_bb.add_trace(go.Scatter(x=df_p.index, y=bb_lo, name="Lower",
-                                 line=dict(color="green", dash="dash", width=1),
-                                 fill="tonexty", fillcolor="rgba(128,128,128,0.1)"))
-    fig_bb.add_trace(go.Scatter(x=df_p.index, y=df_p["Close"], name="Close",
-                                 line=dict(color="white", width=1.5)))
-    fig_bb.add_trace(go.Scatter(x=df_p.index, y=bb_mid, name="MA20",
-                                 line=dict(color="#ffd700", width=1, dash="dot")))
-    fig_bb.update_layout(template="plotly_dark", height=350,
-                          title="Bollinger Bands", margin=dict(l=0,r=0,t=30,b=0))
-    st.plotly_chart(fig_bb, use_container_width=True)
+        fig_bb = go.Figure()
+        fig_bb.add_trace(go.Scatter(x=ind["dates"],y=ind["bb_upper"],name="Upper",
+            line=dict(color="red",dash="dash",width=1)))
+        fig_bb.add_trace(go.Scatter(x=ind["dates"],y=ind["bb_lower"],name="Lower",
+            line=dict(color="green",dash="dash",width=1),
+            fill="tonexty",fillcolor="rgba(128,128,128,0.1)"))
+        fig_bb.add_trace(go.Scatter(x=ind["dates"],y=ind["close"],name="Close",
+            line=dict(color="white",width=1.5)))
+        fig_bb.update_layout(template="plotly_dark",height=300,
+            title="Bollinger Bands",margin=dict(l=0,r=0,t=30,b=0))
+        st.plotly_chart(fig_bb,use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — PREDICT
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_pred:
     st.subheader("Next-Day Return Prediction")
-    st.caption("Auto-filled with live NFLX data. Edit any row or use your own values.")
+    st.caption("Data auto-loaded from backend. No local model imports.")
 
     @st.cache_data(ttl=7200, show_spinner=False)
-    def _live_input(ticker_sym: str):
-        try:
-            from src.data_loader import load_data
-            df = load_data(source="database", ticker=ticker_sym, days_back=30)
-            df = df[["Open","High","Low","Close","Volume"]].dropna().tail(10).round(2)
-            return df.reset_index(drop=True).to_dict("list")
-        except Exception:
-            return {"Open":[600,605,610,615,620,625,630,635,640,645],
-                    "High":[610,615,620,625,630,635,640,645,650,655],
-                    "Low": [595,600,605,610,615,620,625,630,635,640],
-                    "Close":[605,610,615,620,625,630,635,640,645,650],
-                    "Volume":[5_000_000]*10}
+    def _live(t): return get_live_input(t)
 
-    edited = st.data_editor(pd.DataFrame(_live_input(ticker)), num_rows="fixed",
+    raw = _live(ticker)
+    if "error" in raw:
+        raw = {"Open":[600]*10,"High":[610]*10,"Low":[595]*10,
+               "Close":[605]*10,"Volume":[5_000_000]*10}
+
+    edited = st.data_editor(pd.DataFrame(raw), num_rows="fixed",
                              use_container_width=True, key="pred_input")
 
     if st.button("Predict Next Close", type="primary"):
-        try:
-            d    = build_prediction_row(edited.copy(), model)
-            last = edited["Close"].iloc[-1]
-            pred_ret = float(model.predict(d)[0])
-            pred_px  = last * (1 + pred_ret / 100)
+        rows = edited.rename(columns=str.lower).to_dict("records")
+        result = predict(rows, ticker)
+        if "error" in result:
+            st.error(result["error"])
+        else:
+            last = result["last_close"]
+            pred = result["predicted_next_close"]
+            ret  = result["predicted_return_pct"]
+            c1,c2,c3,c4 = st.columns(4)
+            c1.metric("Last Close",  f"${last:.2f}")
+            c2.metric("Predicted",   f"${pred:.2f}")
+            c3.metric("Return",      f"{ret:+.3f}%",
+                      delta=f"{ret:+.3f}%",delta_color="normal")
+            c4.metric("Signal",      result.get("signal","—"))
 
-            # Results
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Last Close",   f"${last:.2f}")
-            c2.metric("Predicted",    f"${pred_px:.2f}")
-            c3.metric("Return",       f"{pred_ret:+.3f}%",
-                      delta=f"{pred_ret:+.3f}%", delta_color="normal")
-            signal = "BUY" if pred_ret > 0 else "HOLD"
-            c4.metric("Signal", signal)
+            ci = result.get("confidence_interval")
+            if ci:
+                st.info(f"90% CI: **${ci['lower_price']:.2f}** — **${ci['upper_price']:.2f}**  "
+                        f"({ci['lower_return_pct']:+.2f}% to {ci['upper_return_pct']:+.2f}%)")
 
-            # Conformal interval
-            if hasattr(model, "conformal_"):
-                cp = model.conformal_
-                lo_r, hi_r = cp.predict_interval(d)
-                lo_p = last * (1 + lo_r[0] / 100)
-                hi_p = last * (1 + hi_r[0] / 100)
-                st.info(f"90% Prediction Interval: **${lo_p:.2f}** — **${hi_p:.2f}**  "
-                        f"(return: {lo_r[0]:+.2f}% to {hi_r[0]:+.2f}%)")
-
-            # Interactive mini chart
-            fig_pred = go.Figure()
-            fig_pred.add_trace(go.Scatter(
-                x=list(range(len(edited))), y=edited["Close"],
-                mode="lines+markers", name="Input",
-                line=dict(color="#2196f3", width=2)))
-            fig_pred.add_hline(y=pred_px, line_dash="dash",
-                                line_color="#e50914",
-                                annotation_text=f"Predicted: ${pred_px:.2f}")
-            fig_pred.update_layout(template="plotly_dark", height=300,
-                                    title="Input Window + Prediction",
-                                    margin=dict(l=0,r=0,t=40,b=0))
-            st.plotly_chart(fig_pred, use_container_width=True)
-
-        except Exception as e:
-            st.error(f"Prediction error: {e}")
-            st.exception(e)
+            closes = edited["Close"].tolist()
+            fig_p = go.Figure()
+            fig_p.add_trace(go.Scatter(x=list(range(len(closes))),y=closes,
+                mode="lines+markers",name="Input",line=dict(color="#2196f3",width=2)))
+            fig_p.add_hline(y=pred,line_dash="dash",line_color="#e50914",
+                annotation_text=f"Predicted: ${pred:.2f}")
+            fig_p.update_layout(template="plotly_dark",height=280,
+                title="Input Window + Prediction",margin=dict(l=0,r=0,t=40,b=0))
+            st.plotly_chart(fig_p,use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — BACKTESTING
+# TAB 3 — BACKTEST (async Celery job with polling)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_bt:
-    st.subheader("Strategy Backtesting Engine")
-    st.caption("Binary long/flat + Kelly-sized strategy vs Buy & Hold. Includes transaction costs.")
+    st.subheader("Strategy Backtesting")
+    st.caption("Heavy calculation offloaded to Celery worker. Polls every 2s.")
 
-    bt_path = os.path.join(REPO_ROOT, "outputs", "backtest_curves.csv")
-    rs_path = os.path.join(REPO_ROOT, "outputs", "rolling_sharpe.csv")
+    bt_days = st.slider("Days to simulate", 30, 365, 90, 10, key="bt_days")
+    if st.button("Run Backtest", type="primary", key="run_bt"):
+        job = submit_backtest(ticker, bt_days)
+        if "error" in job:
+            st.error(f"Could not submit: {job['error']}")
+        else:
+            job_id = job["job_id"]
+            status_box = st.empty()
+            result = poll_until_done(job_id, status_box, timeout_s=180)
 
-    if os.path.exists(bt_path):
-        curves = pd.read_csv(bt_path, index_col=0)
+            if result:
+                bt  = result.get("bt_metrics", {})
+                m1,m2,m3,m4,m5 = st.columns(5)
+                m1.metric("Total Return",   f"{bt.get('Strategy_Total_Return_%',0):+.2f}%")
+                m2.metric("Sharpe",         f"{bt.get('Strategy_Sharpe',0):.3f}")
+                m3.metric("Sortino",        f"{bt.get('Strategy_Sortino',0):.3f}")
+                m4.metric("Max Drawdown",   f"{bt.get('Strategy_MaxDrawdown_%',0):.2f}%")
+                m5.metric("Kelly Fraction", f"{bt.get('Kelly_Fraction',0):.4f}")
 
-        # ── Equity curve ──────────────────────────────────────────────────────
-        fig_eq = go.Figure()
-        fig_eq.add_trace(go.Scatter(y=curves["Strategy"], name="Binary Strategy",
-                                     line=dict(color="#e50914", width=2)))
-        if "Kelly" in curves.columns:
-            fig_eq.add_trace(go.Scatter(y=curves["Kelly"], name="Kelly Strategy",
-                                         line=dict(color="#ffd700", width=1.5, dash="dot")))
-        fig_eq.add_trace(go.Scatter(y=curves["BuyAndHold"], name="Buy & Hold",
-                                     line=dict(color="#9e9e9e", width=1.5, dash="dash")))
-        fig_eq.add_hline(y=1.0, line_dash="dot", line_color="white", opacity=0.3)
-        fig_eq.update_layout(template="plotly_dark", height=400,
-                              title="Equity Curve (starting value = 1.0)",
-                              yaxis_title="Portfolio Value",
-                              margin=dict(l=0,r=0,t=40,b=0))
-        st.plotly_chart(fig_eq, use_container_width=True)
+                curves = result.get("curves", {})
+                if curves:
+                    fig_eq = go.Figure()
+                    fig_eq.add_trace(go.Scatter(y=curves.get("Strategy",[]),
+                        name="Strategy",line=dict(color="#e50914",width=2)))
+                    fig_eq.add_trace(go.Scatter(y=curves.get("Kelly",[]),
+                        name="Kelly",line=dict(color="#ffd700",width=1.5,dash="dot")))
+                    fig_eq.add_trace(go.Scatter(y=curves.get("BuyAndHold",[]),
+                        name="Buy&Hold",line=dict(color="#9e9e9e",width=1.5,dash="dash")))
+                    fig_eq.update_layout(template="plotly_dark",height=380,
+                        title="Equity Curve",yaxis_title="Portfolio Value",
+                        margin=dict(l=0,r=0,t=40,b=0))
+                    st.plotly_chart(fig_eq,use_container_width=True)
 
-        # ── Rolling Sharpe ────────────────────────────────────────────────────
-        if os.path.exists(rs_path):
-            rs = pd.read_csv(rs_path).squeeze()
-            fig_rs = go.Figure()
-            fig_rs.add_trace(go.Scatter(y=rs.values, name="Rolling Sharpe",
-                                         line=dict(color="#9c27b0", width=1.5),
-                                         fill="tozeroy",
-                                         fillcolor="rgba(156,39,176,0.15)"))
-            fig_rs.add_hline(y=0, line_color="white", opacity=0.3)
-            fig_rs.add_hline(y=1, line_dash="dash", line_color="#00c853",
-                              annotation_text="Sharpe = 1", opacity=0.6)
-            fig_rs.update_layout(template="plotly_dark", height=250,
-                                  title="Rolling 63-Day Sharpe Ratio",
-                                  margin=dict(l=0,r=0,t=40,b=0))
-            st.plotly_chart(fig_rs, use_container_width=True)
-
-        # ── Drawdown ──────────────────────────────────────────────────────────
-        strat = curves["Strategy"].values
-        roll_max = np.maximum.accumulate(strat)
-        dd = (strat - roll_max) / roll_max * 100
-        fig_dd = go.Figure()
-        fig_dd.add_trace(go.Scatter(y=dd, name="Drawdown",
-                                     fill="tozeroy", fillcolor="rgba(229,9,20,0.3)",
-                                     line=dict(color="#e50914", width=1)))
-        fig_dd.update_layout(template="plotly_dark", height=200,
-                              title="Strategy Drawdown (%)",
-                              margin=dict(l=0,r=0,t=40,b=0))
-        st.plotly_chart(fig_dd, use_container_width=True)
-
-        # ── Metrics ───────────────────────────────────────────────────────────
-        if os.path.exists(metrics_path):
-            with open(metrics_path) as f:
-                ml = json.load(f)
-            st.markdown("#### Model Performance Metrics")
-            cols = st.columns(min(len(ml), 5))
-            for col, (k, v) in zip(cols, list(ml.items())[:5]):
-                col.metric(k, f"{v:.4f}")
-    else:
-        st.info("Run `python main.py` to generate backtest results.")
+                rs = result.get("rolling_sharpe", [])
+                if rs:
+                    fig_rs = go.Figure()
+                    fig_rs.add_trace(go.Scatter(y=rs,name="Rolling Sharpe",
+                        line=dict(color="#9c27b0",width=1.5),
+                        fill="tozeroy",fillcolor="rgba(156,39,176,0.12)"))
+                    fig_rs.add_hline(y=0,line_color="white",opacity=0.2)
+                    fig_rs.update_layout(template="plotly_dark",height=200,
+                        title="Rolling 63-Day Sharpe",margin=dict(l=0,r=0,t=30,b=0))
+                    st.plotly_chart(fig_rs,use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — PAPER TRADE
+# TAB 4 — PAPER TRADE (async Celery job)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_paper:
     st.subheader("Paper Trading Simulation")
-    st.caption("Runs the model day-by-day on live data, logging each prediction vs actual — simulating real deployment.")
+    st.caption("Day-by-day simulation offloaded to Celery worker.")
 
-    PAPER_LOG = os.path.join(REPO_ROOT, "outputs", "paper_trade_log.csv")
+    pt_days = st.number_input("Days", 10, 365, 90, 10, key="pt_days")
+    if st.button("Run Paper Trade", type="primary", key="run_pt"):
+        job = submit_paper_trade(ticker, int(pt_days))
+        if "error" in job:
+            st.error(job["error"])
+        else:
+            status_box = st.empty()
+            result = poll_until_done(job["job_id"], status_box, timeout_s=180)
+            if result:
+                s = result.get("summary", {})
+                k1,k2,k3,k4,k5 = st.columns(5)
+                k1.metric("Days",       s.get("days_simulated",0))
+                k2.metric("Dir Acc",    f"{s.get('dir_accuracy_pct',0):.1f}%")
+                k3.metric("Trades",     s.get("n_trades",0))
+                k4.metric("Win Rate",   f"{s.get('win_rate_pct',0):.1f}%")
+                k5.metric("Total PnL",  f"{s.get('total_pnl_pct',0):+.2f}%")
 
-    c_btn, c_days = st.columns([3, 1])
-    with c_days:
-        sim_days = st.number_input("Days to simulate", 10, 365, 90, 10)
-    with c_btn:
-        run_sim = st.button("Run Paper Trade Simulation", type="primary")
+                log = result.get("log", [])
+                if log:
+                    df_log = pd.DataFrame(log)
+                    df_log["cum_pnl"] = df_log["pnl_pct"].cumsum()
+                    fig_pnl = go.Figure()
+                    fig_pnl.add_trace(go.Scatter(y=df_log["cum_pnl"],
+                        name="Cum PnL",line=dict(color="#00c853",width=2),
+                        fill="tozeroy",fillcolor="rgba(0,200,83,0.1)"))
+                    fig_pnl.update_layout(template="plotly_dark",height=300,
+                        title="Cumulative PnL (%)",margin=dict(l=0,r=0,t=40,b=0))
+                    st.plotly_chart(fig_pnl,use_container_width=True)
 
-    if run_sim:
-        with st.spinner(f"Simulating {sim_days} trading days..."):
-            try:
-                from src.paper_trade import run_paper_trade, paper_trade_summary
-                log_df  = run_paper_trade(days=int(sim_days))
-                summary = paper_trade_summary(log_df)
-                st.session_state["paper_log"]     = log_df
-                st.session_state["paper_summary"] = summary
-            except Exception as e:
-                st.error(f"Simulation failed: {e}")
-                st.exception(e)
-
-    # Load from session or saved CSV
-    _log = st.session_state.get("paper_log",
-           pd.read_csv(PAPER_LOG) if os.path.exists(PAPER_LOG) else None)
-    _sum = st.session_state.get("paper_summary", {})
-
-    if _log is not None and not _log.empty:
-        if not _sum:
-            from src.paper_trade import paper_trade_summary
-            _sum = paper_trade_summary(_log)
-
-        # KPIs
-        k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("Days Simulated", _sum.get("days_simulated", 0))
-        k2.metric("Dir Accuracy",   f"{_sum.get('dir_accuracy_pct', 0):.1f}%")
-        k3.metric("Trades Taken",   _sum.get("n_trades", 0))
-        k4.metric("Win Rate",       f"{_sum.get('win_rate_pct', 0):.1f}%")
-        k5.metric("Total PnL",      f"{_sum.get('total_pnl_pct', 0):+.2f}%")
-
-        # Cumulative PnL
-        _log["cum_pnl"] = _log["pnl_pct"].cumsum()
-        fig_pnl = go.Figure()
-        fig_pnl.add_trace(go.Scatter(
-            x=list(range(len(_log))), y=_log["cum_pnl"],
-            name="Cumulative PnL (%)",
-            line=dict(color="#00c853", width=2),
-            fill="tozeroy", fillcolor="rgba(0,200,83,0.1)"))
-        fig_pnl.add_hline(y=0, line_color="white", opacity=0.3)
-        fig_pnl.update_layout(template="plotly_dark", height=350,
-                               title="Cumulative Paper Trade PnL (%)",
-                               yaxis_title="PnL (%)",
-                               margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig_pnl, use_container_width=True)
-
-        # Predicted vs Actual scatter
-        fig_sc = px.scatter(
-            _log, x="actual_return", y="pred_return",
-            color="correct",
-            color_discrete_map={True: "#00c853", False: "#e50914"},
-            title="Predicted vs Actual Return (%)",
-            labels={"actual_return": "Actual Return (%)",
-                    "pred_return": "Predicted Return (%)"},
-            template="plotly_dark", height=350,
-            hover_data=["date", "signal", "direction"])
-        fig_sc.add_hline(y=0, line_color="white", opacity=0.2)
-        fig_sc.add_vline(x=0, line_color="white", opacity=0.2)
-        fig_sc.update_layout(margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig_sc, use_container_width=True)
-
-        # Daily log table
-        st.markdown("#### Daily Trade Log")
-        st.dataframe(
-            _log[["date","prev_close","next_close","pred_return",
-                  "actual_return","signal","direction","correct","pnl_pct"]]
-            .sort_values("date", ascending=False),
-            use_container_width=True,
-        )
-    else:
-        st.info("Click 'Run Paper Trade Simulation' to simulate the model on live data.")
-        st.markdown("""
-        **What this does:**
-        - Fetches live NFLX data from Yahoo Finance
-        - For each day in the simulation window, feeds the model the preceding history
-        - Records: predicted return, actual return, signal (BUY/HOLD), correct/wrong
-        - Shows cumulative PnL and directional accuracy over time
-        - This is the closest thing to a live deployment test without real money
-        """)
+                    fig_sc = px.scatter(df_log,x="actual_return",y="pred_return",
+                        color="correct",
+                        color_discrete_map={True:"#00c853",False:"#e50914"},
+                        title="Predicted vs Actual Return (%)",
+                        template="plotly_dark",height=320)
+                    fig_sc.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+                    st.plotly_chart(fig_sc,use_container_width=True)
+                    st.dataframe(df_log.sort_values("date",ascending=False),
+                                 use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 5 — SENTIMENT
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_sent:
-    st.subheader("News Sentiment Analysis")
-    st.caption("VADER sentiment scoring on Netflix headlines via Yahoo Finance. No API key required.")
+    st.subheader("News Sentiment")
 
-    @st.cache_data(ttl=3600, show_spinner="Fetching news sentiment...")
-    def _get_sentiment():
-        try:
-            from src.sentiment import fetch_sentiment
-            daily = fetch_sentiment(ticker)
-            if daily.empty:
-                return pd.DataFrame(columns=["date","title","score","sentiment"])
-            rows = []
-            for date, score in daily.items():
-                rows.append({
-                    "date": date,
-                    "title": f"Recent News Aggregate for {ticker}",
-                    "score": score,
-                    "sentiment": "Positive" if score > 0.05 else ("Negative" if score < -0.05 else "Neutral")
-                })
-            return pd.DataFrame(rows)
-        except Exception as e:
-            return pd.DataFrame(columns=["date","title","score","sentiment"])
+    @st.cache_data(ttl=3600)
+    def _sent(t): return get_sentiment(t)
 
-    df_sent = _get_sentiment()
-
-    if df_sent.empty:
-        st.warning("Sentiment data unavailable. Install vaderSentiment: `pip install vaderSentiment`")
+    s_data = _sent(ticker)
+    if "error" in s_data:
+        st.warning(s_data["error"])
     else:
-        avg = df_sent["score"].mean()
-        pos = (df_sent["sentiment"] == "Positive").sum()
-        neg = (df_sent["sentiment"] == "Negative").sum()
-        neu = (df_sent["sentiment"] == "Neutral").sum()
+        items = s_data.get("items", [])
+        avg   = s_data.get("avg_score", 0)
+        pos   = sum(1 for i in items if i["sentiment"]=="Positive")
+        neg   = sum(1 for i in items if i["sentiment"]=="Negative")
+        neu   = len(items) - pos - neg
+        c1,c2,c3,c4 = st.columns(4)
+        c1.metric("Avg Score", f"{avg:+.3f}",
+                  delta="Bullish" if avg>0 else "Bearish",
+                  delta_color="normal" if avg>0 else "inverse")
+        c2.metric("Positive",pos); c3.metric("Neutral",neu); c4.metric("Negative",neg)
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Avg Sentiment", f"{avg:+.3f}",
-                  delta="Bullish" if avg > 0 else "Bearish",
-                  delta_color="normal" if avg > 0 else "inverse")
-        c2.metric("Positive", pos)
-        c3.metric("Neutral",  neu)
-        c4.metric("Negative", neg)
-
-        # Sentiment bar chart
-        fig_sent = px.bar(df_sent, x="date", y="score", color="sentiment",
-                           color_discrete_map={"Positive":"#00c853",
-                                               "Neutral":"#ffd700",
-                                               "Negative":"#e50914"},
-                           title="News Sentiment Scores",
-                           template="plotly_dark", height=350)
-        fig_sent.add_hline(y=0, line_color="white", opacity=0.3)
-        fig_sent.update_layout(margin=dict(l=0,r=0,t=40,b=0))
-        st.plotly_chart(fig_sent, use_container_width=True)
-
-        # Pie chart
-        fig_pie = px.pie(values=[pos, neu, neg],
-                          names=["Positive","Neutral","Negative"],
-                          color_discrete_sequence=["#00c853","#ffd700","#e50914"],
-                          title="Sentiment Distribution",
-                          template="plotly_dark", height=300)
-        st.plotly_chart(fig_pie, use_container_width=True)
-
-        # Headlines table
-        st.markdown("#### Recent Headlines")
-        st.dataframe(
-            df_sent[["date","title","score","sentiment"]].sort_values("date", ascending=False),
-            use_container_width=True,
-        )
+        if items:
+            df_s = pd.DataFrame(items)
+            fig_s = px.bar(df_s,x="date",y="score",color="sentiment",
+                color_discrete_map={"Positive":"#00c853","Neutral":"#ffd700","Negative":"#e50914"},
+                template="plotly_dark",height=320,title="Sentiment Scores")
+            st.plotly_chart(fig_s,use_container_width=True)
+            st.dataframe(df_s[["date","title","score","sentiment"]]
+                         .sort_values("date",ascending=False),use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 5 — RISK MANAGEMENT (Position Sizing + VaR + Execution Matrix)
+# TAB 6 — RISK MANAGEMENT
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_risk:
     st.subheader("Risk & Position Management")
-    st.caption("Execution-ready position sizing with stop-loss, take-profit, Kelly fraction, VaR/CVaR, and circuit breaker.")
 
-    # ── Portfolio settings ────────────────────────────────────────────────────
     with st.expander("Portfolio Settings", expanded=True):
-        rc1, rc2, rc3, rc4 = st.columns(4)
-        portfolio_val   = rc1.number_input("Portfolio ($)", 10_000, 10_000_000, 100_000, 10_000)
-        max_pos_pct     = rc2.slider("Max Position %", 1, 20, 5) / 100
-        max_heat_pct    = rc3.slider("Max Portfolio Heat %", 5, 50, 20) / 100
-        halt_dd_pct     = rc4.slider("Circuit Breaker DD %", 5, 30, 10) / 100
+        rc1,rc2,rc3,rc4 = st.columns(4)
+        pv   = rc1.number_input("Portfolio ($)",10_000,10_000_000,100_000,10_000)
+        mxp  = rc2.slider("Max Position %",1,20,5)/100
+        mxh  = rc3.slider("Max Heat %",5,50,20)/100
+        halt = rc4.slider("Circuit Breaker %",5,30,10)/100
 
-    # ── Live prediction for risk calc ─────────────────────────────────────────
-    st.markdown("#### Position Sizing Calculator")
-    pr1, pr2, pr3, pr4 = st.columns(4)
-    input_price    = pr1.number_input("Current Price ($)", 1.0, 10000.0, 650.0, 1.0)
-    input_atr      = pr2.number_input("ATR (14-period)", 0.1, 500.0, 15.0, 0.5)
-    input_pred_ret = pr3.number_input("Predicted Return (%)", -10.0, 10.0, 0.5, 0.1)
-    input_win_rate = pr4.slider("Historical Win Rate %", 40, 65, 52) / 100
+    pr1,pr2,pr3,pr4 = st.columns(4)
+    inp_price  = pr1.number_input("Price ($)",1.0,10000.0,650.0,1.0)
+    inp_atr    = pr2.number_input("ATR",0.1,500.0,15.0,0.5)
+    inp_ret    = pr3.number_input("Predicted Return (%)",-10.0,10.0,0.5,0.1)
+    inp_wr     = pr4.slider("Win Rate %",40,65,52)/100
 
     if st.button("Compute Position", type="primary"):
-        try:
-            from src.risk_manager import RiskManager, RiskConfig
-            cfg = RiskConfig(
-                portfolio_value    = portfolio_val,
-                max_position_pct   = max_pos_pct,
-                max_portfolio_heat = max_heat_pct,
-                max_drawdown_halt  = halt_dd_pct,
-            )
-            rm    = RiskManager(cfg)
-            order = rm.compute_position(
-                ticker      = ticker,
-                pred_return = input_pred_ret,
-                last_price  = input_price,
-                atr         = input_atr,
-                win_rate    = input_win_rate,
-            )
-            matrix = rm.risk_matrix(input_pred_ret, input_price, input_atr, portfolio_val)
+        payload = {"ticker":ticker,"pred_return_pct":inp_ret,"last_price":inp_price,
+                   "atr":inp_atr,"portfolio_value":pv,"win_rate":inp_wr,
+                   "max_position_pct":mxp,"max_drawdown_halt":halt}
+        order  = compute_risk_position(payload)
+        matrix = compute_risk_matrix(payload)
 
-            # Signal banner
-            if order.signal == "BUY":
-                st.success(f"Signal: **BUY** — {order.shares} shares @ ${order.entry_price:.2f}")
-            elif order.signal == "HALT":
-                st.error("Circuit breaker triggered — trading halted")
+        if "error" in order:
+            st.error(order["error"])
+        else:
+            sig = order.get("signal","—")
+            if sig=="BUY":
+                st.success(f"Signal: BUY — {order['shares']} shares @ ${order['entry_price']:.2f}")
+            elif sig=="HALT":
+                st.error("Circuit breaker triggered")
             else:
-                st.warning(f"Signal: **{order.signal}** — {order.notes}")
+                st.warning(f"Signal: {sig} — {order.get('notes','')}")
 
-            # Position metrics
-            m1, m2, m3, m4, m5, m6 = st.columns(6)
-            m1.metric("Shares",        order.shares)
-            m2.metric("Position ($)",  f"${order.position_value:,.0f}")
-            m3.metric("Stop Loss",     f"${order.stop_loss:.2f}")
-            m4.metric("Take Profit",   f"${order.take_profit:.2f}")
-            m5.metric("Risk/Trade",    f"${order.risk_per_trade:,.0f}")
-            m6.metric("Kelly Frac",    f"{order.kelly_fraction:.3f}")
+            m1,m2,m3,m4,m5,m6 = st.columns(6)
+            m1.metric("Shares",       order.get("shares",0))
+            m2.metric("Position ($)", f"${order.get('position_value',0):,.0f}")
+            m3.metric("Stop Loss",    f"${order.get('stop_loss',0):.2f}")
+            m4.metric("Take Profit",  f"${order.get('take_profit',0):.2f}")
+            m5.metric("Risk/Trade",   f"${order.get('risk_per_trade',0):,.0f}")
+            m6.metric("Kelly",        f"{order.get('kelly_fraction',0):.3f}")
 
-            # Risk matrix table
-            st.markdown("#### Risk Matrix")
-            matrix_df = pd.DataFrame([matrix]).T.reset_index()
-            matrix_df.columns = ["Parameter", "Value"]
-            st.dataframe(matrix_df, use_container_width=True, hide_index=True)
+            if matrix and "error" not in matrix:
+                mdf = pd.DataFrame([matrix]).T.reset_index()
+                mdf.columns = ["Parameter","Value"]
+                st.dataframe(mdf,use_container_width=True,hide_index=True)
 
-            # Risk/Reward chart
-            prices = np.linspace(input_price * 0.85, input_price * 1.15, 100)
-            pnl    = (prices - input_price) * order.shares
+            prices = [inp_price*(0.85+0.002*i) for i in range(76)]
+            pnl    = [(p-inp_price)*order.get("shares",0) for p in prices]
             fig_rr = go.Figure()
-            fig_rr.add_trace(go.Scatter(x=prices, y=pnl, mode="lines",
-                                         line=dict(color="#2196f3", width=2), name="P&L"))
-            fig_rr.add_hline(y=0, line_color="white", opacity=0.3)
-            fig_rr.add_vline(x=order.stop_loss,   line_dash="dash", line_color="#e50914",
-                              annotation_text="Stop Loss")
-            fig_rr.add_vline(x=order.take_profit, line_dash="dash", line_color="#00c853",
-                              annotation_text="Take Profit")
-            fig_rr.add_vline(x=input_price,       line_dash="dot",  line_color="white",
-                              annotation_text="Entry")
-            fig_rr.update_layout(template="plotly_dark", height=350,
-                                  title="P&L vs Price (Risk/Reward Diagram)",
-                                  xaxis_title="Price ($)", yaxis_title="P&L ($)",
-                                  margin=dict(l=0, r=0, t=40, b=0))
-            st.plotly_chart(fig_rr, use_container_width=True)
-
-        except Exception as e:
-            st.error(f"Risk calculation error: {e}")
+            fig_rr.add_trace(go.Scatter(x=prices,y=pnl,mode="lines",
+                line=dict(color="#2196f3",width=2),name="P&L"))
+            sl = order.get("stop_loss",0); tp = order.get("take_profit",0)
+            if sl: fig_rr.add_vline(x=sl,line_dash="dash",line_color="#e50914",
+                annotation_text="Stop")
+            if tp: fig_rr.add_vline(x=tp,line_dash="dash",line_color="#00c853",
+                annotation_text="TP")
+            fig_rr.add_hline(y=0,line_color="white",opacity=0.3)
+            fig_rr.update_layout(template="plotly_dark",height=320,
+                title="P&L Diagram",xaxis_title="Price ($)",yaxis_title="P&L ($)",
+                margin=dict(l=0,r=0,t=40,b=0))
+            st.plotly_chart(fig_rr,use_container_width=True)
 
     st.markdown("---")
-
-    # ── VaR / CVaR section ────────────────────────────────────────────────────
-    st.markdown("#### Portfolio Risk Metrics (Historical)")
-    if "Return" in df_feat.columns:
-        ret  = df_feat["Return"].dropna() / 100
-        conf = st.slider("Confidence Level", 0.90, 0.99, 0.95, 0.01)
-        var  = float(np.percentile(ret, (1 - conf) * 100))
-        cvar = float(ret[ret <= var].mean())
-
-        v1, v2, v3, v4 = st.columns(4)
-        v1.metric(f"VaR ({conf:.0%})",  f"{var:.3%}")
-        v2.metric(f"CVaR ({conf:.0%})", f"{cvar:.3%}")
-        v3.metric("Ann. Volatility",    f"{ret.std() * np.sqrt(252):.2%}")
-        v4.metric("Hist. Sharpe",
-                  f"{ret.mean() / ret.std() * np.sqrt(252):.3f}" if ret.std() > 0 else "N/A")
-
-        fig_dist = go.Figure()
-        fig_dist.add_trace(go.Histogram(x=ret * 100, nbinsx=120,
-                                         marker_color="#2196f3", opacity=0.7))
-        fig_dist.add_vline(x=var * 100,  line_dash="dash", line_color="#e50914",
-                            annotation_text=f"VaR {conf:.0%}")
-        fig_dist.add_vline(x=cvar * 100, line_dash="dash", line_color="#ff9800",
-                            annotation_text=f"CVaR {conf:.0%}")
-        fig_dist.update_layout(template="plotly_dark", height=300,
-                                title="Return Distribution with VaR/CVaR",
-                                xaxis_title="Daily Return (%)",
-                                margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig_dist, use_container_width=True)
-
-    # ── Volatility surface ────────────────────────────────────────────────────
-    if "Return" in df_feat.columns:
-        ret = df_feat["Return"].dropna() / 100
-        vol_20  = ret.rolling(20).std()  * np.sqrt(252) * 100
-        vol_60  = ret.rolling(60).std()  * np.sqrt(252) * 100
-        vol_120 = ret.rolling(120).std() * np.sqrt(252) * 100
-        fig_vol = go.Figure()
-        fig_vol.add_trace(go.Scatter(x=df_feat.index, y=vol_20,  name="20d",
-                                      line=dict(color="#e50914", width=1.5)))
-        fig_vol.add_trace(go.Scatter(x=df_feat.index, y=vol_60,  name="60d",
-                                      line=dict(color="#ffd700", width=1.5)))
-        fig_vol.add_trace(go.Scatter(x=df_feat.index, y=vol_120, name="120d",
-                                      line=dict(color="#00bcd4", width=1.5)))
-        fig_vol.update_layout(template="plotly_dark", height=300,
-                               title="Annualised Volatility Surface",
-                               yaxis_title="Volatility (%)",
-                               margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig_vol, use_container_width=True)
-
-    # ── Correlation matrix ────────────────────────────────────────────────────
-    corr_cols = ["Return","RSI","MACD_Norm","BB_Pct","ATR_Norm",
-                 "Volatility","Stoch_K","Williams_R","CCI","Momentum5"]
-    avail = [c for c in corr_cols if c in df_feat.columns]
-    if avail:
-        corr = df_feat[avail].dropna().corr()
-        fig_corr = px.imshow(corr, text_auto=".2f", color_continuous_scale="RdBu_r",
-                              zmin=-1, zmax=1, title="Feature Correlation Matrix",
-                              template="plotly_dark", height=450)
-        fig_corr.update_layout(margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig_corr, use_container_width=True)
+    st.markdown("#### Execute Trade (Paper / Alpaca)")
+    ec1,ec2,ec3,ec4 = st.columns(4)
+    ex_shares = ec1.number_input("Shares",1,10000,10)
+    ex_side   = ec2.selectbox("Side",["buy","sell"])
+    ex_type   = ec3.selectbox("Order Type",["market","limit"])
+    ex_broker = ec4.selectbox("Broker",["paper","alpaca"])
+    ex_limit  = None
+    if ex_type=="limit":
+        ex_limit = st.number_input("Limit Price",1.0,10000.0,inp_price,0.01)
+    if st.button("Execute", type="primary"):
+        resp = execute_trade({"ticker":ticker,"shares":int(ex_shares),
+                              "side":ex_side,"order_type":ex_type,
+                              "limit_price":ex_limit,"broker":ex_broker})
+        if "error" in resp:
+            st.error(resp["error"])
+        else:
+            st.success(f"Order {resp.get('status','submitted')} — "
+                       f"{resp.get('side','')} {resp.get('shares','')} {resp.get('ticker','')}"
+                       f" via {resp.get('broker','')}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 6 — DRIFT MONITOR
+# TAB 7 — DRIFT (async Celery job)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_drift:
     st.subheader("Model Drift Monitor")
-    st.caption("PSI + KS test comparing training vs recent data distribution.")
 
-    try:
-        split    = int(len(df_feat) * 0.8)
-        df_train = df_feat.iloc[:split]
-        df_rec   = df_feat.iloc[split:]
+    col_drift, _ = st.columns([1,3])
+    run_drift = col_drift.button("Run Drift Check", type="primary")
 
-        from src.drift import detect_drift, drift_summary_df
-        dr  = detect_drift(df_train, df_rec, FEATURES)
-        ddf = drift_summary_df(dr)
+    # Try cached result first
+    @st.cache_data(ttl=1800)
+    def _drift(t): return get_drift_report(t)
+    cached = _drift(ticker)
 
-        n_drift = len(dr["drifted_features"])
-        if dr["overall_drift"]:
-            st.error(f"Significant drift in {n_drift} features — consider retraining.")
-        elif n_drift > 0:
-            st.warning(f"Moderate drift in {n_drift} features.")
+    if run_drift:
+        job = submit_drift_check(ticker)
+        if "error" in job:
+            st.error(job["error"])
         else:
-            st.success("No significant drift. Model is stable.")
+            sb = st.empty()
+            cached = poll_until_done(job["job_id"], sb, timeout_s=120)
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Features Checked", len(ddf))
-        c2.metric("Drifted",          n_drift)
-        c3.metric("PSI Threshold",    dr["psi_threshold"])
+    if cached and "error" not in cached:
+        n = cached.get("n_drifted", 0)
+        if cached.get("overall_drift"):
+            st.error(f"Significant drift in {n} features")
+        elif n>0:
+            st.warning(f"Moderate drift in {n} features")
+        else:
+            st.success("No significant drift")
 
-        top20 = ddf.head(20)
-        fig_psi = px.bar(top20, x="PSI", y="Feature", orientation="h",
-                          color="Drifted",
-                          color_discrete_map={True:"#e50914", False:"#2196f3"},
-                          title="Top 20 Features by PSI",
-                          template="plotly_dark", height=500)
-        fig_psi.add_vline(x=0.1, line_dash="dash", line_color="#ffd700",
-                           annotation_text="Moderate")
-        fig_psi.add_vline(x=0.2, line_dash="dash", line_color="#e50914",
-                           annotation_text="Significant")
-        fig_psi.update_layout(margin=dict(l=0,r=0,t=40,b=0))
-        st.plotly_chart(fig_psi, use_container_width=True)
-
-        st.dataframe(ddf, use_container_width=True)
-
-    except Exception as e:
-        st.warning(f"Drift monitor error: {e}")
-        st.info("Install scipy: `pip install scipy`")
+        tbl = cached.get("table", [])
+        if tbl:
+            df_d = pd.DataFrame(tbl).sort_values("PSI", ascending=False)
+            top  = df_d.head(20)
+            fig_psi = px.bar(top,x="PSI",y="Feature",orientation="h",
+                color="Drifted",
+                color_discrete_map={True:"#e50914",False:"#2196f3"},
+                template="plotly_dark",height=480,title="Top 20 Features by PSI")
+            fig_psi.add_vline(x=0.1,line_dash="dash",line_color="#ffd700",
+                annotation_text="Moderate")
+            fig_psi.add_vline(x=0.2,line_dash="dash",line_color="#e50914",
+                annotation_text="Significant")
+            st.plotly_chart(fig_psi,use_container_width=True)
+            st.dataframe(df_d,use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 8 — EXPLAINABILITY (Feature Importance — interactive Plotly)
+# TAB 8 — EXPLAINABILITY
 # ═══════════════════════════════════════════════════════════════════════════════
-with tab_shap:
+with tab_xp:
     st.subheader("Model Explainability")
-    st.caption("Feature importance from all 4 base learners + correlation analysis.")
 
-    @st.cache_data(show_spinner="Computing feature importance...")
-    def _compute_importance():
-        """Average feature importances from all tree-based base learners."""
-        try:
-            feat_cols = model.feature_names_ if hasattr(model, "feature_names_") else FEATURES
-            imps, count = None, 0
-            for name, est in model.fitted_learners_:
-                if hasattr(est, "feature_importances_"):
-                    fi = np.array(est.feature_importances_[:len(feat_cols)], dtype=np.float64)
-                    imps = fi if imps is None else imps + fi
-                    count += 1
-            if imps is None or count == 0:
-                return None, None, "No feature importances available"
-            return imps / count, feat_cols, None
-        except Exception as e:
-            return None, None, str(e)
+    @st.cache_data(ttl=3600)
+    def _fi(): return get_feature_importance()
 
-    imps, feat_cols, err = _compute_importance()
-
-    if imps is None:
-        st.warning(f"Feature importance unavailable: {err}")
+    fi = _fi()
+    if "error" in fi:
+        st.warning(fi["error"])
     else:
-        n_top = st.slider("Top N features", 5, min(40, len(feat_cols)), 20)
-
-        # ── 1. Avg feature importance bar ─────────────────────────────────────
-        idx       = np.argsort(imps)[-n_top:]
-        top_feats = np.array(feat_cols)[idx]
-        top_vals  = imps[idx]
-
+        feats = fi.get("features",[])
+        imps  = fi.get("importances",[])
+        n_top = st.slider("Top N features",5,min(40,len(feats)),20)
         fig_fi = go.Figure(go.Bar(
-            x=top_vals, y=top_feats, orientation="h",
-            marker=dict(color=top_vals, colorscale="Reds",
-                        showscale=True, colorbar=dict(title="Importance")),
-        ))
-        fig_fi.update_layout(
-            template="plotly_dark", height=max(400, n_top * 22),
-            title=f"Top {n_top} Features — Avg Importance (XGB + LGBM + RF + ET)",
-            xaxis_title="Feature Importance (higher = more influential)",
-            margin=dict(l=0, r=0, t=40, b=0),
-        )
-        st.plotly_chart(fig_fi, use_container_width=True)
-
-        # ── 2. Per-model importance comparison ────────────────────────────────
-        st.markdown("#### Per-Model Importance Comparison")
-        model_imps = {}
-        for name, est in model.fitted_learners_:
-            if hasattr(est, "feature_importances_"):
-                fi = np.array(est.feature_importances_[:len(feat_cols)], dtype=np.float64)
-                model_imps[name] = fi
-
-        if model_imps:
-            top_feat_list = list(top_feats)
-            fig_comp = go.Figure()
-            colors = {"xgb": "#e50914", "lgbm": "#ffd700",
-                      "rf": "#00c853", "et": "#00bcd4"}
-            for mname, mfi in model_imps.items():
-                vals = [mfi[list(feat_cols).index(f)] if f in feat_cols else 0
-                        for f in top_feat_list]
-                fig_comp.add_trace(go.Bar(
-                    name=mname.upper(), x=vals, y=top_feat_list,
-                    orientation="h",
-                    marker_color=colors.get(mname, "#9e9e9e"),
-                    opacity=0.8,
-                ))
-            fig_comp.update_layout(
-                template="plotly_dark", barmode="group",
-                height=max(400, n_top * 28),
-                title="Feature Importance by Model",
-                xaxis_title="Importance",
-                margin=dict(l=0, r=0, t=40, b=0),
-            )
-            st.plotly_chart(fig_comp, use_container_width=True)
-
-        # ── 3. Feature correlation with target ────────────────────────────────
-        st.markdown("#### Feature Correlation with Next-Day Return")
-        feat_df = get_featured_data()
-        if "Return" in feat_df.columns:
-            feat_df["NextReturn"] = feat_df["Return"].shift(-1)
-            avail = [f for f in top_feats if f in feat_df.columns]
-            corr  = feat_df[avail + ["NextReturn"]].dropna() \
-                        .corr()["NextReturn"].drop("NextReturn").reindex(avail)
-
-            fig_corr = go.Figure(go.Bar(
-                x=corr.values, y=corr.index,
-                orientation="h",
-                marker_color=["#00c853" if v > 0 else "#e50914" for v in corr.values],
-            ))
-            fig_corr.add_vline(x=0, line_color="white", opacity=0.3)
-            fig_corr.update_layout(
-                template="plotly_dark", height=max(350, n_top * 22),
-                title="Pearson Correlation of Top Features with Next-Day Return",
-                xaxis_title="Correlation coefficient",
-                margin=dict(l=0, r=0, t=40, b=0),
-            )
-            st.plotly_chart(fig_corr, use_container_width=True)
-
-        st.caption(
-            "Feature importance = average gain across all splits in each tree model. "
-            "Correlation shows linear relationship with next-day return — "
-            "low correlation doesn't mean a feature is useless (non-linear effects)."
-        )
+            x=imps[:n_top],y=feats[:n_top],orientation="h",
+            marker=dict(color=imps[:n_top],colorscale="Reds",
+                showscale=True,colorbar=dict(title="Importance"))))
+        fig_fi.update_layout(template="plotly_dark",
+            height=max(380,n_top*22),
+            title=f"Top {n_top} Feature Importances",
+            xaxis_title="Importance",margin=dict(l=0,r=0,t=40,b=0))
+        st.plotly_chart(fig_fi,use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 9 — ARCHITECTURE
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_arch:
-    st.subheader("System Architecture & Edge")
-
+    st.subheader("Architecture & Edge")
     st.markdown("""
-### The Edge
-
-Most stock prediction projects predict **price** (trivially correlated with itself).
-This project predicts **next-day return (%)** — a stationary, genuinely hard target.
-
-The directional accuracy metric (>52% = real signal) is what matters, not R².
-
----
-
-### Full Pipeline Architecture
+### Decoupled Architecture
 
 ```
-Data Sources (multi-source)
-  ├── yfinance        — daily/intraday, free
-  ├── Alpha Vantage   — daily + 1min/5min REST, free tier
-  └── Alpaca Markets  — minute bars, free paper account
-        │
-        ▼
-  data_loader.py  ──── validation, fallback chain
-        │
-        ▼
-  feature_engineering.py  ──── 51 technical features
-        │
-        ▼
-  regime_detection.py  ──── HMM Bull/Bear/Sideways
-        │
-        ▼
-  ManualStackingRegressor
-  XGB + LGBM + RF + ET → Ridge (OOF stacking)
-        │
-        ▼
-  uncertainty.py  ──── conformal prediction intervals (90%)
-        │
-        ▼
-  risk_manager.py  ──── ATR stop-loss, Kelly sizing,
-        │                circuit breaker, portfolio heat
-        ▼
-  model_registry.py  ──── versioned saves + registry.json
-        │
-        ▼
-  monitoring.py  ──── Slack/email drift + retrain alerts
-        │
-        ├── FastAPI v2.0
-        │     /predict        — ML prediction + CI
-        │     /risk/position  — execution-ready position size
-        │     /risk/matrix    — full risk matrix
-        │     /execute        — broker integration (Alpaca/paper)
-        │     /model_info     — version + metrics
-        │     /registry       — model version history
-        │
-        ├── Streamlit (9 tabs, all Plotly interactive)
-        │     Market Overview · Predict · Backtesting
-        │     Paper Trade · Sentiment · Risk Management
-        │     Drift Monitor · Explainability · Architecture
-        │
-        └── GitHub Actions
-              test.yml    — CI on every push
-              retrain.yml — weekly scheduled retraining
+Streamlit (pure presentation)
+    │  httpx HTTP requests only
+    ▼
+FastAPI (v2.0 — headless backend)
+    ├── /predict          — ML inference
+    ├── /market/*         — OHLCV + indicators
+    ├── /risk/position    — position sizing
+    ├── /execute          — broker integration
+    ├── /sentiment        — VADER news
+    ├── /drift            — PSI + KS
+    ├── /explainability/* — feature importance
+    └── /api/v1/tasks/*   — async job routing
+            │
+        Redis (broker + result backend)
+            │
+        Celery Workers
+            ├── run_backtest_task
+            ├── run_paper_trade_task
+            └── run_drift_task
 ```
 
----
+### Why this architecture
 
-### Design Decisions
+- Streamlit never blocks on CPU-heavy tasks — Celery workers handle them
+- Model loading happens once at FastAPI startup, not on every Streamlit interaction
+- FastAPI can be scaled horizontally; Streamlit is just a UI skin
+- Redis result backend lets any client (Streamlit, mobile, CLI) poll job status
 
-| Choice | Reason |
-|---|---|
-| Return target (not price) | Stationary; avoids spurious R² from autocorrelation |
-| Manual stacking (not sklearn) | Avoids is_regressor() validator bug with XGB/LGBM |
-| Walk-forward CV | Only valid CV for time-series; no future leakage |
-| Conformal prediction | Calibrated intervals with mathematical coverage guarantee |
-| HMM regime detection | Market dynamics differ across regimes |
-| ATR-based stop-loss | Adapts to current volatility; tighter in calm markets |
-| Kelly criterion | Bet proportional to edge; maximises long-run growth |
-| Model versioning | Rollback capability; track performance over time |
-| Multi-source data | Fallback chain ensures reliability; intraday capability |
+### Running locally
 
----
+```bash
+# Terminal 1 — backend
+make api
 
-### Honest Limitations
+# Terminal 2 — Celery worker
+celery -A worker.celery_app worker --loglevel=info
 
-- No earnings surprise signal (biggest NFLX driver — ±15% moves)
-- Technical indicators are correlated — ~10 independent signals, not 51
-- 15-min delayed Yahoo Finance data — not suitable for HFT
-- Model trained on 2002–2026; pre-streaming era data may not generalise
-- Alpaca execution is paper-only by default — live trading requires explicit config
+# Terminal 3 — Streamlit
+make app
+```
 
----
-
-### Tests
-[![Tests](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/test.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)
-
-Run locally: `pytest tests/ -v`
+Set `API_BASE_URL=http://localhost:8000` in `.env` or Streamlit secrets.
     """)
