@@ -54,24 +54,31 @@ def load_model():
 @st.cache_data(ttl=7200, show_spinner="Fetching live data...")
 def load_live_ohlcv(ticker_sym: str = "NFLX", period: str = "2y") -> pd.DataFrame:
     try:
-        import yfinance as yf
-        df = yf.Ticker(ticker_sym).history(period=period)
-        if hasattr(df.index.dtype, "tz") and df.index.dtype.tz is not None:
-            df.index = df.index.tz_localize(None)
-        return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        from src.data_loader import load_data
+        days_map = {"6mo": 180, "1y": 365, "2y": 730, "5y": 1825, "max": 5000}
+        days_back = days_map.get(period, 730)
+        df = load_data(source="database", ticker=ticker_sym, days_back=days_back)
+        if not df.empty:
+            return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        return None
     except Exception:
         return None
 
-@st.cache_data(show_spinner="Computing features...")
-def get_featured_data():
-    if os.path.exists(CACHE_PATH):
-        return pd.read_parquet(CACHE_PATH)
+@st.cache_data(show_spinner="Computing/Retrieving features...")
+def get_featured_data(ticker_sym: str = "NFLX"):
+    from src.features_redis import get_cached_features
+    df = get_cached_features(ticker_sym)
+    if df is not None and not df.empty:
+        return df
     from src.data_loader import load_data
     from src.preprocessing import preprocess_data
     from src.feature_engineering import create_features
-    df = load_data(source="csv")
+    df = load_data(source="database", ticker=ticker_sym)
     df = preprocess_data(df)
-    return create_features(df)
+    df_feat = create_features(df)
+    from src.features_redis import cache_features
+    cache_features(df_feat, ticker_sym)
+    return df_feat
 
 try:
     model = load_model()
@@ -95,7 +102,7 @@ with st.sidebar:
     st.markdown("[![Tests](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/test.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)")
     st.markdown("[GitHub Repo](https://github.com/SumedhPatil1507/netflix-stock-prediction)")
 
-df_feat   = get_featured_data()
+df_feat   = get_featured_data(ticker)
 FEATURES  = model.feature_names_ if hasattr(model, "feature_names_") else get_active_features(df_feat)
 df_live   = load_live_ohlcv(ticker, "2y")
 df_source = df_live if df_live is not None else df_feat[["Open","High","Low","Close","Volume"]]
@@ -141,10 +148,10 @@ with tab_market:
     @st.cache_data(ttl=7200)
     def _get_period_data(ticker_sym: str, p: str):
         try:
-            import yfinance as yf
-            df = yf.Ticker(ticker_sym).history(period=p)
-            if hasattr(df.index.dtype, "tz") and df.index.dtype.tz is not None:
-                df.index = df.index.tz_localize(None)
+            from src.data_loader import load_data
+            days_map = {"6mo": 180, "1y": 365, "2y": 730, "5y": 1825, "max": 5000}
+            days_back = days_map.get(p, 730)
+            df = load_data(source="database", ticker=ticker_sym, days_back=days_back)
             return df[["Open","High","Low","Close","Volume"]].dropna()
         except Exception:
             return df_source
@@ -250,10 +257,8 @@ with tab_pred:
     @st.cache_data(ttl=7200, show_spinner=False)
     def _live_input(ticker_sym: str):
         try:
-            import yfinance as yf
-            df = yf.Ticker(ticker_sym).history(period="20d")
-            if hasattr(df.index.dtype, "tz") and df.index.dtype.tz is not None:
-                df.index = df.index.tz_localize(None)
+            from src.data_loader import load_data
+            df = load_data(source="database", ticker=ticker_sym, days_back=30)
             df = df[["Open","High","Low","Close","Volume"]].dropna().tail(10).round(2)
             return df.reset_index(drop=True).to_dict("list")
         except Exception:
@@ -482,18 +487,18 @@ with tab_sent:
     @st.cache_data(ttl=3600, show_spinner="Fetching news sentiment...")
     def _get_sentiment():
         try:
-            import yfinance as yf
-            from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-            sia   = SentimentIntensityAnalyzer()
-            news  = yf.Ticker("NFLX").news or []
-            rows  = []
-            for item in news:
-                ts    = pd.Timestamp(item.get("providerPublishTime", 0), unit="s")
-                title = item.get("title", "")
-                score = sia.polarity_scores(title)["compound"]
-                rows.append({"date": ts, "title": title, "score": score,
-                              "sentiment": "Positive" if score > 0.05
-                              else ("Negative" if score < -0.05 else "Neutral")})
+            from src.sentiment import fetch_sentiment
+            daily = fetch_sentiment(ticker)
+            if daily.empty:
+                return pd.DataFrame(columns=["date","title","score","sentiment"])
+            rows = []
+            for date, score in daily.items():
+                rows.append({
+                    "date": date,
+                    "title": f"Recent News Aggregate for {ticker}",
+                    "score": score,
+                    "sentiment": "Positive" if score > 0.05 else ("Negative" if score < -0.05 else "Neutral")
+                })
             return pd.DataFrame(rows)
         except Exception as e:
             return pd.DataFrame(columns=["date","title","score","sentiment"])
