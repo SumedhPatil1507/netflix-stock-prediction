@@ -306,3 +306,142 @@ Data is automatically cached in TimescaleDB (or SQLite fallback) after the first
 ## 📄 License
 
 [MIT](LICENSE) © 2024 Sumedh Patil
+
+**[Results](RESULTS.md)** | **[Contributing](CONTRIBUTING.md)**
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Streamlit (Pure Presentation Layer)                    │
+│  app/app.py  ──  app/api_client.py                      │
+│  Zero src.* imports. All data via httpx to FastAPI.     │
+└───────────────────┬─────────────────────────────────────┘
+                    │ HTTP (httpx)
+┌───────────────────▼─────────────────────────────────────┐
+│  FastAPI v2.0  (api/main.py)                            │
+│  /predict  /market/*  /risk/*  /execute                 │
+│  /sentiment  /drift  /explainability/*                  │
+│  /api/v1/tasks/*  (job routing → Celery)                │
+└──────┬─────────────────────────┬───────────────────────┘
+       │ publish task            │ result store
+┌──────▼────────┐      ┌────────▼────────────────────────┐
+│  Redis        │      │  Celery Workers (worker/)        │
+│  (broker +    │      │  run_backtest_task               │
+│   results)    │      │  run_paper_trade_task            │
+└───────────────┘      │  run_drift_task                  │
+                       └─────────────────────────────────┘
+```
+
+---
+
+## What's Inside
+
+| Layer | Implementation |
+|---|---|
+| **Presentation** | Streamlit — zero ML imports, pure httpx calls |
+| **Backend** | FastAPI v2.0 — async, rate limited, versioned |
+| **Task Queue** | Celery + Redis — heavy CPU work offloaded |
+| **Data** | yfinance · Alpha Vantage · Alpaca Markets · CSV |
+| **Features** | 51 technical indicators + HMM regime |
+| **Model** | XGB + LGBM + RF + ET → Ridge (manual stacking) |
+| **Uncertainty** | Conformal prediction — 90% calibrated intervals |
+| **Risk** | ATR stop · Kelly sizing · circuit breaker |
+| **Execution** | `/execute` — Alpaca paper/live + simulation |
+| **Versioning** | Timestamped model saves + JSON registry |
+| **Retraining** | GitHub Actions cron weekly + manual trigger |
+| **Monitoring** | PSI + KS drift · Slack/email alerts |
+| **Tests** | 40+ pytest unit tests across all modules |
+
+---
+
+## Running Locally
+
+```bash
+# 1. Setup
+cp .env.example .env
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+pip install -r requirements.txt
+
+# 2. Train model
+make train
+
+# 3. Start services (3 terminals)
+make api          # FastAPI at http://localhost:8000
+make worker       # Celery worker
+make app          # Streamlit at http://localhost:8501
+
+# 4. Or use Docker
+make up           # docker compose up --build
+```
+
+---
+
+## Streamlit Cloud Deployment
+
+1. Push to GitHub
+2. Go to [share.streamlit.io](https://share.streamlit.io)
+3. Set **Main file path**: `app/app.py`
+4. Add secret in Streamlit Cloud settings:
+   ```toml
+   [general]
+   API_BASE_URL = "https://your-fastapi-backend.railway.app"
+   ```
+5. Deploy FastAPI + Celery separately on [Railway](https://railway.app) or [Render](https://render.com)
+
+---
+
+## FastAPI Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/predict` | POST | ML prediction + conformal interval |
+| `/market/ohlcv` | GET | OHLCV bars for any ticker |
+| `/market/indicators` | GET | RSI, MACD, Bollinger |
+| `/market/live_input` | GET | Last N rows for predict tab |
+| `/risk/position` | POST | Execution-ready position size |
+| `/risk/matrix` | POST | Full risk matrix |
+| `/execute` | POST | Submit order (Alpaca/paper) |
+| `/sentiment` | GET | VADER news sentiment |
+| `/drift` | GET | PSI + KS drift report |
+| `/explainability/importance` | GET | Feature importances |
+| `/api/v1/tasks/backtest` | POST | Submit async backtest job |
+| `/api/v1/tasks/paper_trade` | POST | Submit async paper trade job |
+| `/api/v1/tasks/drift` | POST | Submit async drift check |
+| `/api/v1/tasks/{job_id}` | GET | Poll job status |
+| `/model_info` | GET | Version + metrics |
+| `/health` | GET | Status check |
+
+---
+
+## Async Task Flow (Celery)
+
+When Streamlit submits a heavy job:
+1. FastAPI receives request → calls `task.apply_async()` → returns `{job_id}` instantly
+2. Celery worker picks up the task from Redis queue
+3. Streamlit polls `/api/v1/tasks/{job_id}` every 2 seconds
+4. On `SUCCESS`, result is rendered; on `FAILURE`, error is shown
+
+---
+
+## Environment Variables
+
+```bash
+# .env / Streamlit secrets
+API_BASE_URL=http://localhost:8000   # FastAPI backend URL
+REDIS_URL=redis://localhost:6379
+ALPHA_VANTAGE_KEY=...
+ALPACA_API_KEY=...
+ALPACA_SECRET_KEY=...
+ALPACA_BASE_URL=https://paper-api.alpaca.markets
+SLACK_WEBHOOK_URL=...
+DEFAULT_TICKER=NFLX
+```
+
+---
+
+## Tech Stack
+
+Python · XGBoost · LightGBM · Scikit-learn · hmmlearn · FastAPI · Celery · Redis · Streamlit · Plotly · httpx · Pytest · GitHub Actions · Docker · python-dotenv
