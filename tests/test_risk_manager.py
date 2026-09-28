@@ -59,7 +59,18 @@ def test_risk_reward_ratio(rm):
 def test_position_value_within_limit(rm):
     order = rm.compute_position("NFLX", pred_return=1.0, last_price=650.0, atr=10.0)
     max_val = rm.cfg.portfolio_value * rm.cfg.max_position_pct
-    assert order.position_value <= max_val * 1.01  # 1% tolerance
+    assert order.position_value <= max_val
+    assert order.shares <= int(max_val / order.entry_price)
+
+
+def test_hold_when_position_cap_cannot_buy_one_share():
+    rm = RiskManager(RiskConfig(portfolio_value=1_000, max_position_pct=0.05))
+    order = rm.compute_position("NFLX", pred_return=1.0, last_price=100.0, atr=2.0)
+
+    assert order.signal == "HOLD"
+    assert order.shares == 0
+    assert order.position_value == 0
+    assert "position value limit" in order.notes.lower()
 
 
 def test_circuit_breaker_halts_trading(rm):
