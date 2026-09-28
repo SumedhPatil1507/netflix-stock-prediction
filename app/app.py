@@ -11,6 +11,11 @@ from plotly.subplots import make_subplots
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 os.chdir(REPO_ROOT)
 sys.path.insert(0, REPO_ROOT)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(REPO_ROOT, ".env"))
+except ImportError:
+    pass
 
 from src.modeling import get_active_features
 from src.feature_utils import build_prediction_row
@@ -128,9 +133,10 @@ tabs = st.tabs([
     "⚠️ Risk",
     "🔬 Drift Monitor",
     "🔍 Explainability",
+    "🗞 AI Narrative",
     "🏗 Architecture",
 ])
-tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk, tab_drift, tab_shap, tab_arch = tabs
+tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk, tab_drift, tab_shap, tab_narrative, tab_arch = tabs
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — MARKET OVERVIEW (Candlestick + indicators)
@@ -273,6 +279,16 @@ with tab_pred:
             pred_ret = float(model.predict(d)[0])
             pred_px  = last * (1 + pred_ret / 100)
 
+            from src.model_registry import get_latest_version, record_latest_prediction
+            prediction_record = {
+                "ticker": ticker,
+                "model_version": get_latest_version(),
+                "last_close": float(last),
+                "predicted_return_pct": pred_ret,
+                "predicted_next_close": float(pred_px),
+                "signal": "BUY" if pred_ret > 0 else "HOLD",
+            }
+
             # Results
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Last Close",   f"${last:.2f}")
@@ -286,10 +302,18 @@ with tab_pred:
             if hasattr(model, "conformal_"):
                 cp = model.conformal_
                 lo_r, hi_r = cp.predict_interval(d)
+                prediction_record["confidence_interval"] = {
+                    "lower_return_pct": float(lo_r[0]),
+                    "upper_return_pct": float(hi_r[0]),
+                    "lower_price": float(last * (1 + lo_r[0] / 100)),
+                    "upper_price": float(last * (1 + hi_r[0] / 100)),
+                    "coverage": f"{(1 - cp.alpha):.0%}",
+                }
                 lo_p = last * (1 + lo_r[0] / 100)
                 hi_p = last * (1 + hi_r[0] / 100)
                 st.info(f"90% Prediction Interval: **${lo_p:.2f}** — **${hi_p:.2f}**  "
                         f"(return: {lo_r[0]:+.2f}% to {hi_r[0]:+.2f}%)")
+            record_latest_prediction(prediction_record, ticker)
 
             # Interactive mini chart
             fig_pred = go.Figure()
@@ -308,6 +332,119 @@ with tab_pred:
         except Exception as e:
             st.error(f"Prediction error: {e}")
             st.exception(e)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AI NARRATIVE — grounded market explanation with source citations
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_narrative:
+    st.subheader(f"AI Market Narrator · {ticker}")
+    st.caption(
+        "Two-agent LangGraph workflow: retrieve ticker-matched earnings/news evidence from "
+        "Chroma, then explain the latest model prediction and conformal interval with citations."
+    )
+
+    transcript_uploads = st.file_uploader(
+        "Optional: add recent earnings-call transcripts (.txt or .md)",
+        type=["txt", "md"],
+        accept_multiple_files=True,
+        key="market_narrator_transcripts",
+        help="Uploaded files are stored locally under data/earnings_transcripts/<TICKER>/ and indexed when you generate a narrative.",
+    )
+    st.caption(
+        "Recent financial news is refreshed from Yahoo Finance. Add transcript files above for "
+        "earnings-call context; accepted files are scoped to the selected ticker."
+    )
+
+    if st.button("Generate AI Narrative", type="primary", key="generate_market_narrative"):
+        try:
+            if transcript_uploads:
+                from pathlib import Path
+                transcript_dir = Path(REPO_ROOT) / "data" / "earnings_transcripts" / ticker
+                transcript_dir.mkdir(parents=True, exist_ok=True)
+                for uploaded_file in transcript_uploads:
+                    safe_name = os.path.basename(uploaded_file.name)
+                    (transcript_dir / safe_name).write_bytes(uploaded_file.getvalue())
+
+            if df_live is None or df_live.empty:
+                raise RuntimeError(f"Could not load live market data for {ticker} to produce a current prediction.")
+
+            latest_row = build_prediction_row(df_live.tail(90).copy(), model)
+            latest_close = float(df_live["Close"].iloc[-1])
+            predicted_return = float(model.predict(latest_row)[0])
+            prediction_record = {
+                "ticker": ticker,
+                "last_close": latest_close,
+                "predicted_return_pct": predicted_return,
+                "predicted_next_close": latest_close * (1 + predicted_return / 100),
+                "signal": "BUY" if predicted_return > 0 else "HOLD",
+                "model_version": None,
+            }
+            if hasattr(model, "conformal_"):
+                conformal = model.conformal_
+                lower_return, upper_return = conformal.predict_interval(latest_row)
+                prediction_record["confidence_interval"] = {
+                    "lower_return_pct": float(lower_return[0]),
+                    "upper_return_pct": float(upper_return[0]),
+                    "lower_price": latest_close * (1 + float(lower_return[0]) / 100),
+                    "upper_price": latest_close * (1 + float(upper_return[0]) / 100),
+                    "coverage": f"{(1 - conformal.alpha):.0%}",
+                }
+
+            from src.model_registry import get_latest_version, record_latest_prediction
+            prediction_record["model_version"] = get_latest_version()
+            prediction_record = record_latest_prediction(prediction_record, ticker)
+
+            # Streamlit Cloud secrets and local environment variables both work.
+            for secret_name in (
+                "OPENAI_API_KEY", "OPENAI_API_BASE", "LANGFUSE_PUBLIC_KEY",
+                "LANGFUSE_SECRET_KEY", "LANGFUSE_BASE_URL",
+            ):
+                if not os.getenv(secret_name):
+                    try:
+                        secret_value = st.secrets.get(secret_name)
+                        if secret_value:
+                            os.environ[secret_name] = str(secret_value)
+                    except Exception:
+                        continue
+
+            from src.market_narrator import generate_market_narrative
+            with st.spinner("Refreshing recent news, searching source documents, and writing a cited explanation..."):
+                result = generate_market_narrative(ticker, prediction_record)
+            st.session_state[f"market_narrative_{ticker}"] = result
+        except Exception as exc:
+            st.error(f"Could not generate the AI narrative: {exc}")
+
+    narrative_result = st.session_state.get(f"market_narrative_{ticker}")
+    if narrative_result:
+        prediction = narrative_result.get("prediction", {})
+        interval = prediction.get("confidence_interval") or {}
+        signal = "Bullish" if float(prediction.get("predicted_return_pct", 0)) > 0 else "Bearish / neutral"
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Model signal", signal)
+        c2.metric("Predicted next-day return", f"{float(prediction.get('predicted_return_pct', 0)):+.3f}%")
+        c3.metric("Latest close", f"${float(prediction.get('last_close', 0)):.2f}")
+        if interval:
+            c4.metric(
+                f"{interval.get('coverage', 'Conformal')} interval (return)",
+                f"{float(interval['lower_return_pct']):+.2f}% to {float(interval['upper_return_pct']):+.2f}%",
+            )
+        else:
+            c4.metric("Conformal interval", "Unavailable")
+
+        if interval and float(interval["lower_return_pct"]) <= 0 <= float(interval["upper_return_pct"]):
+            st.warning("The conformal interval spans both negative and positive returns; the point prediction is directionally uncertain.")
+        st.markdown(narrative_result.get("narrative", "No narrative was returned."))
+        st.caption(f"Run ID: {narrative_result.get('run_id', 'unknown')} · Model version: {prediction.get('model_version') or 'model.pkl'}")
+
+        with st.expander(f"Retrieved sources ({len(narrative_result.get('sources', []))})", expanded=True):
+            for source in narrative_result.get("sources", []):
+                source_label = f"[{source.get('citation_id', '?')}] {source.get('title', 'Source')}"
+                st.markdown(f"**{source_label}** · {source.get('source_type', 'source')} · {source.get('published_at', '')}")
+                st.write(source.get("text", ""))
+                if source.get("url"):
+                    st.markdown(f"[Open original source]({source['url']})")
+                st.markdown("---")
+        st.caption("Agent steps are written to logs/agent_traces.jsonl; configure Langfuse keys to send spans to your Langfuse project.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — BACKTESTING

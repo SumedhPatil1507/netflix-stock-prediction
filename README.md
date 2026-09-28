@@ -25,9 +25,10 @@
 | **Versioning** | Timestamped model saves + JSON registry with rollback |
 | **Retraining** | GitHub Actions cron (weekly) + manual trigger |
 | **Monitoring** | PSI + KS drift detection · Slack/email alerts |
+| **AI Narrative** | Two-agent LangGraph RAG over recent ticker news and earnings-call transcripts · Chroma citations · Langfuse traces · RAGAS faithfulness evaluation |
 | **API** | FastAPI v2.0 — rate limited, `/predict` `/risk/position` `/execute` `/registry` |
-| **Dashboard** | 9-tab Streamlit — all Plotly interactive, multi-ticker |
-| **Tests** | 40+ pytest unit tests across all modules |
+| **Dashboard** | 10-tab Streamlit — all Plotly interactive, multi-ticker |
+| **Tests** | 50+ pytest unit tests across all modules |
 
 ---
 
@@ -49,10 +50,11 @@ Data Sources
         │
   risk_manager.py (ATR stop, Kelly, circuit breaker)
         │
-  model_registry.py (versioned saves)
+  model_registry.py (versioned models + latest per-ticker predictions)
         │
   ├── FastAPI: /predict /risk/position /risk/matrix /execute /registry
-  ├── Streamlit: 9 interactive tabs
+  ├── Streamlit: 10 interactive tabs
+  │     └── AI Narrative: LangGraph retrieval → grounded synthesis + citations
   └── GitHub Actions: CI + weekly retraining
 ```
 
@@ -74,7 +76,38 @@ make api                      # FastAPI at localhost:8000/docs
 make test                     # run all tests
 make paper-trade              # 90-day paper trade simulation
 make registry                 # view model version history
+python scripts/evaluate_narrative_faithfulness.py # RAGAS faithfulness score (after a narrative run)
 ```
+
+---
+
+## Deploy to Streamlit Community Cloud
+
+The existing [live dashboard](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app) is served from this repository. The Community Cloud app should use:
+
+| Setting | Value |
+|---|---|
+| Repository | `SumedhPatil1507/netflix-stock-prediction` |
+| Branch | `main` |
+| App entrypoint | `app/app.py` |
+| Python | Select `3.11` in Community Cloud advanced settings (`.python-version` records the local target) |
+| Dependencies | Root `requirements.txt` |
+
+After the app is connected to this repository and branch, Community Cloud rebuilds it when new commits are pushed. To connect or check these settings, open the app in [Streamlit Community Cloud](https://share.streamlit.io/) and choose **Manage app**. See Streamlit's [deployment guide](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/deploy) and [dependency guide](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/app-dependencies).
+
+For AI narratives, add an `OPENAI_API_KEY` in the app's **Settings → Secrets** in Community Cloud. Without it, the main dashboard remains available, but narrative generation reports that the key is required. The following optional settings enable a compatible API endpoint, model selection, and Langfuse tracing:
+
+```toml
+OPENAI_API_KEY = "your-key"
+# OPENAI_API_BASE = "https://api.openai.com/v1"
+MARKET_NARRATOR_MODEL = "gpt-4o-mini"
+MARKET_NARRATOR_EMBEDDING_MODEL = "text-embedding-3-small"
+# LANGFUSE_PUBLIC_KEY = "your-public-key"
+# LANGFUSE_SECRET_KEY = "your-secret-key"
+# LANGFUSE_BASE_URL = "https://cloud.langfuse.com"
+```
+
+Set secrets through the Streamlit dashboard, **not** in GitHub. See [Streamlit secrets management](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management). The app fetches recent news from Yahoo Finance; upload `.txt` or `.md` earnings-call transcripts in the AI Narrative tab. Keep original transcript files separately because local app files and the local Chroma index are deployment-instance data, not a durable shared database.
 
 ---
 
@@ -136,6 +169,14 @@ ALERT_EMAIL=...
 # API
 API_RATE_LIMIT=10
 DEFAULT_TICKER=NFLX
+
+# AI Market Narrator (required for narrative generation; optional Langfuse observability)
+OPENAI_API_KEY=...
+MARKET_NARRATOR_MODEL=gpt-4o-mini
+MARKET_NARRATOR_EMBEDDING_MODEL=text-embedding-3-small
+LANGFUSE_PUBLIC_KEY=...
+LANGFUSE_SECRET_KEY=...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
 ```
 
 ---
@@ -148,7 +189,8 @@ src/
   feature_utils.py     # shared feature computation
   modeling.py          # ManualStackingRegressor + conformal
   risk_manager.py      # ATR stop, Kelly, circuit breaker
-  model_registry.py    # versioned model saves
+  model_registry.py    # versioned models + latest per-ticker predictions
+  market_narrator.py   # LangGraph retrieval + grounded narrative synthesis
   monitoring.py        # Slack/email alerts
   regime_detection.py  # HMM Bull/Bear/Sideways
   backtest.py          # Kelly + Sharpe/Sortino/Calmar
@@ -156,9 +198,11 @@ src/
   paper_trade.py       # day-by-day live simulation
   sentiment.py         # VADER news scoring
   tuning.py            # Optuna hyperparameter search
+agent_traces.py        # local JSONL and optional Langfuse agent spans
+scripts/evaluate_narrative_faithfulness.py # RAGAS faithfulness evaluation
 api/main.py            # FastAPI v2.0
-app/app.py             # Streamlit 9-tab dashboard
-tests/                 # 40+ unit tests
+app/app.py             # Streamlit 10-tab dashboard
+tests/                 # 50+ unit tests
 .github/workflows/     # CI + weekly retraining
 ```
 

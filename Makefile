@@ -25,6 +25,9 @@ paper-trade:
 test:
 	pytest tests/ -v
 
+eval-narrative:
+	python scripts/evaluate_narrative_faithfulness.py
+
 app:
 	streamlit run app/app.py
 
@@ -43,4 +46,4 @@ clean:
 	find . -name "*.pyc" -delete 2>/dev/null; \
 	echo "Cleaned."
 
-.PHONY: train train-live train-alphavantage train-alpaca tune paper-trade test app api config registry clean
+.PHONY: train train-live train-alphavantage train-alpaca tune paper-trade test eval-narrative app api config registry clean

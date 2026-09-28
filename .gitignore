@@ -13,3 +13,8 @@ logs/
 .mypy_cache/
 dist/
 build/
+data/earnings_transcripts/**
+!data/earnings_transcripts/README.md
+data/market_narrator/
+outputs/latest_predictions.json
+outputs/narrative_faithfulness.json
