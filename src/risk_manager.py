@@ -175,9 +175,27 @@ class RiskManager:
                 kelly_fraction=kf, notes="Portfolio heat limit reached",
             )
 
-        shares = int(max_risk_dollars / risk_per_share)
-        if shares < 1:
-            shares = 1
+        # Enforce max_position_pct as a hard gross-exposure cap, independently
+        # of the Kelly/risk-budget share count above.
+        max_position_value = max(
+            self.cfg.portfolio_value * self.cfg.max_position_pct, 0.0
+        )
+        max_position_shares = (
+            int(max_position_value / last_price) if last_price > 0 else 0
+        )
+        if max_position_shares < 1:
+            return PositionOrder(
+                ticker=ticker, signal="HOLD", shares=0,
+                entry_price=last_price, stop_loss=stop_loss, take_profit=take_profit,
+                position_value=0, risk_per_trade=0, risk_pct=0,
+                kelly_fraction=kf, confidence_interval=ci,
+                notes="Maximum position value limit is below the price of one share",
+            )
+
+        risk_based_shares = int(max_risk_dollars / risk_per_share)
+        if risk_based_shares < 1:
+            risk_based_shares = 1
+        shares = min(risk_based_shares, max_position_shares)
 
         position_value = shares * last_price
         risk_per_trade = shares * risk_per_share
