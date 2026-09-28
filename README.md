@@ -20,7 +20,7 @@
 | **Features** | 51 technical indicators — lags, RSI, MACD, BB, ATR, Stochastic, CCI, OBV, regime |
 | **Model** | XGB + LGBM + RF + ET → Ridge (manual stacking, OOF, walk-forward CV) |
 | **Uncertainty** | Conformal prediction — 90% calibrated intervals |
-| **Risk** | ATR stop-loss · Kelly sizing · portfolio heat · drawdown circuit breaker |
+| **Risk** | Configurable max position value cap (5% default) · ATR stop-loss · Kelly sizing · portfolio heat · drawdown circuit breaker |
 | **Execution** | `/execute` endpoint — Alpaca paper/live + paper simulation |
 | **Versioning** | Timestamped model saves + JSON registry with rollback |
 | **Retraining** | GitHub Actions cron (weekly) + manual trigger |
@@ -48,7 +48,7 @@ Data Sources
         │
   uncertainty.py (conformal intervals, 90% coverage)
         │
-  risk_manager.py (ATR stop, Kelly, circuit breaker)
+  risk_manager.py (max position value cap, ATR stops, Kelly, heat, drawdown circuit breaker)
         │
   model_registry.py (versioned models + latest per-ticker predictions)
         │
@@ -132,7 +132,7 @@ uvicorn api.main:app --reload
 | Endpoint | Method | Description |
 |---|---|---|
 | `/predict` | POST | ML prediction + conformal interval |
-| `/risk/position` | POST | Execution-ready position size |
+| `/risk/position` | POST | Position size bounded by the configured max position value |
 | `/risk/matrix` | POST | Full risk matrix |
 | `/execute` | POST | Submit order to Alpaca or paper |
 | `/model_info` | GET | Architecture + metrics + version |
@@ -144,6 +144,7 @@ uvicorn api.main:app --reload
 ## Risk Management
 
 The `/risk/position` endpoint and Risk tab compute:
+- **Hard position-value cap** — gross position value cannot exceed `portfolio_value × max_position_pct` (5% default); returns `HOLD` if even one share exceeds the cap
 - **ATR-based stop-loss** — adapts to current volatility
 - **Fixed % stop** — hard floor (default 2%)
 - **Take-profit** — 2× stop distance (configurable R:R)
@@ -188,7 +189,7 @@ src/
   data_loader.py       # yfinance + Alpha Vantage + Alpaca + CSV
   feature_utils.py     # shared feature computation
   modeling.py          # ManualStackingRegressor + conformal
-  risk_manager.py      # ATR stop, Kelly, circuit breaker
+  risk_manager.py      # max position value cap, ATR stop, Kelly, circuit breaker
   model_registry.py    # versioned models + latest per-ticker predictions
   market_narrator.py   # LangGraph retrieval + grounded narrative synthesis
   monitoring.py        # Slack/email alerts
