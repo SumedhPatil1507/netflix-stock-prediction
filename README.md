@@ -13,7 +13,16 @@ An interactive Streamlit dashboard for exploring Netflix (NFLX) market data, nex
 
 ## Dashboard and model
 
-The dashboard is a **ten-tab** Streamlit app with interactive Plotly charts. It uses a stacking regressor (XGBoost, LightGBM, Random Forest, and Extra Trees with a Ridge meta-model) and engineered technical indicators. It includes market overview, next-day prediction, backtesting, paper-trading simulation, sentiment, risk, drift monitoring, explainability, **AI Market Narrator**, and architecture views.
+The dashboard is a **ten-tab** Streamlit app with interactive Plotly charts. It uses a stacking regressor (XGBoost, LightGBM, Random Forest, and Extra Trees with a Ridge meta-model) and engineered technical indicators. It includes market overview, next-day prediction, backtesting, paper-trading simulation, **sentiment analysis with VADER**, risk, drift monitoring, explainability, **AI Market Narrator**, and architecture views.
+
+### Key Features
+
+- **Interactive Plotly Charts**: All visualizations are fully interactive with zoom, pan, and hover capabilities
+- **VADER Sentiment Analysis**: Real-time sentiment scoring of Netflix headlines via Yahoo Finance with fallback sample data
+- **AI Market Narrator**: Agentic RAG system that explains model predictions with citation-backed narratives
+- **Risk Management**: Comprehensive position sizing, stop-loss, and portfolio risk tools
+- **Model Explainability**: Feature importance analysis and correlation matrices
+- **Drift Monitoring**: Automated drift detection with PSI and KS tests
 
 The repository also includes a separate FastAPI service (`api/main.py`), model training pipeline (`main.py`), tests, and GitHub Actions workflows. The Streamlit dashboard is launched independently from the API.
 
@@ -44,6 +53,33 @@ The AI Narrator requires additional dependencies. Ensure you have:
 
 The system automatically initializes with sample Netflix earnings transcripts and financial news on first run.
 
+## Sentiment Analysis
+
+The dashboard includes **VADER sentiment analysis** for Netflix headlines:
+
+### Features
+
+- **Real-time News Fetching**: Automatically fetches recent Netflix headlines from Yahoo Finance
+- **VADER Scoring**: Uses VADER (Valence Aware Dictionary and sEntiment Reasoner) for sentiment analysis
+- **Fallback Sample Data**: When live news is unavailable, uses realistic sample Netflix headlines for demonstration
+- **Interactive Visualizations**: Sentiment scores displayed with interactive bar charts and pie charts
+- **Sentiment Distribution**: Shows positive, neutral, and negative sentiment breakdown
+
+### How It Works
+
+1. **News Fetching**: Retrieves recent Netflix news via yfinance API
+2. **Sentiment Scoring**: Applies VADER sentiment analysis to each headline
+3. **Classification**: Categorizes headlines as Positive (>0.05), Negative (<-0.05), or Neutral
+4. **Visualization**: Displays sentiment trends and distribution with interactive Plotly charts
+
+### Requirements
+
+- **vaderSentiment**: Required for sentiment analysis (installed via requirements.txt)
+- **yfinance**: Required for news fetching (already in requirements.txt)
+- **No API Key Needed**: Uses free Yahoo Finance API for news data
+
+When live news is unavailable, the system gracefully falls back to sample data and displays an informative message.
+
 ## Run the Streamlit app locally
 
 Use Python 3.11 (the version selected by `.python-version`):
@@ -60,7 +96,7 @@ python -m pip install -r requirements.txt
 streamlit run app/app.py
 ```
 
-Open the local URL printed by Streamlit, normally <http://localhost:8501>. The app loads `models/model.pkl` and uses the checked-in feature cache and CSV data as fallbacks. Live chart data is fetched from Yahoo Finance when available; an internet connection is needed for live quotes. No API key is required for the basic dashboard.
+Open the local URL printed by Streamlit, normally <http://localhost:8501>. The app loads `models/model.pkl` and uses the checked-in feature cache and CSV data as fallbacks. Live chart data is fetched from Yahoo Finance when available; an internet connection is needed for live quotes and sentiment analysis. No API key is required for the basic dashboard.
 
 You can also launch it with `make app` after installing the dependencies. To run the separate API locally, install the development dependencies and use:
 
@@ -75,7 +111,7 @@ The API docs are then at <http://127.0.0.1:8000/docs>.
 
 1. Push this repository to GitHub.
 2. In [Streamlit Community Cloud](https://share.streamlit.io/), create an app and select `SumedhPatil1507/netflix-stock-prediction`.
-3. Select branch `main` and set **Main file path** to `app/app.py`.
+3. Select branch `streamlit-streamlit-cloud-setup` and set **Main file path** to `app/app.py`.
 4. Use Python 3.11 (the repository includes `.python-version`) and deploy. Streamlit Cloud installs the root `requirements.txt` automatically.
 5. After subsequent commits are pushed to the selected branch, Streamlit Cloud redeploys the app.
 
@@ -90,7 +126,7 @@ git status
 git diff
 git add README.md app requirements.txt .streamlit .github  # adjust this list to your changes
 git commit -m "Update Streamlit app and documentation"
-git push origin main
+git push origin streamlit-streamlit-cloud-setup
 ```
 
 To stage every changed and newly added file instead, use `git add -A` in place of the targeted `git add` command. Do not commit `.env`, credentials, or other secrets.
@@ -102,7 +138,7 @@ python -m pip install -r requirements-dev.txt
 pytest -q
 ```
 
-The GitHub Actions test workflow runs on pushes and pull requests targeting `main`.
+The GitHub Actions test workflow runs on pushes and pull requests targeting `streamlit-streamlit-cloud-setup`.
 
 ## Optional training and configuration
 
@@ -143,7 +179,7 @@ tests/                     Pytest suite
 
 ## Main technologies
 
-Python 3.11 · Streamlit · Plotly · pandas · scikit-learn · XGBoost · LightGBM · yfinance · FastAPI · pytest · LangChain · LangGraph · ChromaDB · Langfuse · RAGAS
+Python 3.11 · Streamlit · Plotly · pandas · scikit-learn · XGBoost · LightGBM · yfinance · FastAPI · pytest · vaderSentiment · LangChain · LangGraph · ChromaDB · Langfuse · RAGAS
 
 ## License
 
