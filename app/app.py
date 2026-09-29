@@ -487,6 +487,23 @@ with tab_sent:
             from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
             sia   = SentimentIntensityAnalyzer()
             news  = yf.Ticker("NFLX").news or []
+            
+            # If no news from yfinance, use sample data
+            if not news:
+                st.info("Live news unavailable from Yahoo Finance. Using sample data for demonstration.")
+                import time
+                now = time.time()
+                sample_news = [
+                    {"title": "Netflix stock surges on strong subscriber growth", "providerPublishTime": int(now - 86400)},
+                    {"title": "Netflix faces increasing competition in streaming market", "providerPublishTime": int(now - 172800)},
+                    {"title": "Netflix reports better than expected earnings", "providerPublishTime": int(now - 259200)},
+                    {"title": "Netflix content strategy drives international expansion", "providerPublishTime": int(now - 345600)},
+                    {"title": "Wall Street remains bullish on Netflix despite valuation concerns", "providerPublishTime": int(now - 432000)},
+                    {"title": "Netflix advertising business shows promise", "providerPublishTime": int(now - 518400)},
+                    {"title": "Netflix original content continues to drive engagement", "providerPublishTime": int(now - 604800)},
+                ]
+                news = sample_news
+            
             rows  = []
             for item in news:
                 ts    = pd.Timestamp(item.get("providerPublishTime", 0), unit="s")
@@ -496,13 +513,16 @@ with tab_sent:
                               "sentiment": "Positive" if score > 0.05
                               else ("Negative" if score < -0.05 else "Neutral")})
             return pd.DataFrame(rows)
+        except ImportError:
+            # Handle missing vaderSentiment gracefully
+            return pd.DataFrame(columns=["date","title","score","sentiment"])
         except Exception as e:
             return pd.DataFrame(columns=["date","title","score","sentiment"])
 
     df_sent = _get_sentiment()
 
     if df_sent.empty:
-        st.warning("Sentiment data unavailable. Install vaderSentiment: `pip install vaderSentiment`")
+        st.warning("Sentiment data unavailable. vaderSentiment may not be installed. Install with: `pip install vaderSentiment`")
     else:
         avg = df_sent["score"].mean()
         pos = (df_sent["sentiment"] == "Positive").sum()
