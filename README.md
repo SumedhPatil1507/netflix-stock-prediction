@@ -1,169 +1,112 @@
-# Alpha Engine
+# Alpha Engine — Netflix Stock Prediction
 
 [![Tests](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/test.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)
-[![Retrain](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/retrain.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-Live-red)](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)
+[![Streamlit](https://img.shields.io/badge/Streamlit-app-red)](https://streamlit.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> Production-grade ML system for stock return prediction with execution-ready risk management and broker integration.
+An interactive Streamlit dashboard for exploring Netflix (NFLX) market data, next-day return estimates, historical backtests, sentiment, risk metrics, model explainability, and drift. The repository includes a trained model, sample data, and a feature cache, so the dashboard can start without first training a model.
 
-**[Live App](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)** | **[Results](RESULTS.md)** | **[Contributing](CONTRIBUTING.md)**
+> **Disclaimer:** This project is for educational and research purposes only. It is not investment advice and does not guarantee future performance. Market data may be delayed or unavailable.
 
----
+**[Open the deployed app](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)** · **[Results](RESULTS.md)** · **[Contributing](CONTRIBUTING.md)**
 
-## What's Inside
+## Dashboard and model
 
-| Layer | Implementation |
-|---|---|
-| **Data** | yfinance · Alpha Vantage (1min/5min) · Alpaca Markets (minute bars) · CSV fallback |
-| **Features** | 51 technical indicators — lags, RSI, MACD, BB, ATR, Stochastic, CCI, OBV, regime |
-| **Model** | XGB + LGBM + RF + ET → Ridge (manual stacking, OOF, walk-forward CV) |
-| **Uncertainty** | Conformal prediction — 90% calibrated intervals |
-| **Risk** | ATR stop-loss · Kelly sizing · portfolio heat · drawdown circuit breaker |
-| **Execution** | `/execute` endpoint — Alpaca paper/live + paper simulation |
-| **Versioning** | Timestamped model saves + JSON registry with rollback |
-| **Retraining** | GitHub Actions cron (weekly) + manual trigger |
-| **Monitoring** | PSI + KS drift detection · Slack/email alerts |
-| **API** | FastAPI v2.0 — rate limited, `/predict` `/risk/position` `/execute` `/registry` |
-| **Dashboard** | 9-tab Streamlit — all Plotly interactive, multi-ticker |
-| **Tests** | 40+ pytest unit tests across all modules |
+The dashboard is a nine-tab Streamlit app with interactive Plotly charts. It uses a stacking regressor (XGBoost, LightGBM, Random Forest, and Extra Trees with a Ridge meta-model) and engineered technical indicators. It includes market overview, next-day prediction, backtesting, paper-trading simulation, sentiment, risk, drift monitoring, explainability, and architecture views.
 
----
+The repository also includes a separate FastAPI service (`api/main.py`), model training pipeline (`main.py`), tests, and GitHub Actions workflows. The Streamlit dashboard is launched independently from the API.
 
-## Architecture
+## Run the Streamlit app locally
 
-```
-Data Sources
-  ├── yfinance (daily/intraday)
-  ├── Alpha Vantage (1min–daily, free tier)
-  └── Alpaca Markets (minute bars, paper account)
-        │
-  data_loader.py → preprocessing → feature_engineering (51 features)
-        │
-  regime_detection.py (HMM: Bull/Bear/Sideways)
-        │
-  ManualStackingRegressor (XGB + LGBM + RF + ET → Ridge)
-        │
-  uncertainty.py (conformal intervals, 90% coverage)
-        │
-  risk_manager.py (ATR stop, Kelly, circuit breaker)
-        │
-  model_registry.py (versioned saves)
-        │
-  ├── FastAPI: /predict /risk/position /risk/matrix /execute /registry
-  ├── Streamlit: 9 interactive tabs
-  └── GitHub Actions: CI + weekly retraining
-```
-
----
-
-## Quick Start
+Use Python 3.11 (the version selected by `.python-version`):
 
 ```bash
-cp .env.example .env          # add API keys
-pip install -r requirements-dev.txt
+git clone https://github.com/SumedhPatil1507/netflix-stock-prediction.git
+cd netflix-stock-prediction
 
-make train                    # train on CSV
-make train-live               # train on live yfinance
-make train-alphavantage       # train on Alpha Vantage data
-make train-alpaca             # train on Alpaca minute bars
+python3.11 -m venv .venv
+source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 
-make app                      # Streamlit dashboard
-make api                      # FastAPI at localhost:8000/docs
-make test                     # run all tests
-make paper-trade              # 90-day paper trade simulation
-make registry                 # view model version history
+streamlit run app/app.py
 ```
 
----
+Open the local URL printed by Streamlit, normally <http://localhost:8501>. The app loads `models/model.pkl` and uses the checked-in feature cache and CSV data as fallbacks. Live chart data is fetched from Yahoo Finance when available; an internet connection is needed for live quotes. No API key is required for the basic dashboard.
 
-## Data Sources
-
-| Source | Interval | Key Required | Notes |
-|---|---|---|---|
-| yfinance | daily + intraday | No | Free, rate limited |
-| Alpha Vantage | 1min/5min/daily | `ALPHA_VANTAGE_KEY` | 25 req/day free |
-| Alpaca Markets | 1min–1day | `ALPACA_API_KEY` + `ALPACA_SECRET_KEY` | Free paper account |
-| CSV | daily | No | Offline fallback |
-
----
-
-## API Endpoints
+You can also launch it with `make app` after installing the dependencies. To run the separate API locally, install the development dependencies and use:
 
 ```bash
-uvicorn api.main:app --reload
-# Swagger: http://localhost:8000/docs
+python -m pip install -r requirements-dev.txt
+uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/predict` | POST | ML prediction + conformal interval |
-| `/risk/position` | POST | Execution-ready position size |
-| `/risk/matrix` | POST | Full risk matrix |
-| `/execute` | POST | Submit order to Alpaca or paper |
-| `/model_info` | GET | Architecture + metrics + version |
-| `/registry` | GET | All model versions |
-| `/health` | GET | Status check |
+The API docs are then at <http://127.0.0.1:8000/docs>.
 
----
+## Deploy to Streamlit Community Cloud
 
-## Risk Management
+1. Push this repository to GitHub.
+2. In [Streamlit Community Cloud](https://share.streamlit.io/), create an app and select `SumedhPatil1507/netflix-stock-prediction`.
+3. Select branch `main` and set **Main file path** to `app/app.py`.
+4. Use Python 3.11 (the repository includes `.python-version`) and deploy. Streamlit Cloud installs the root `requirements.txt` automatically.
+5. After subsequent commits are pushed to the selected branch, Streamlit Cloud redeploys the app.
 
-The `/risk/position` endpoint and Risk tab compute:
-- **ATR-based stop-loss** — adapts to current volatility
-- **Fixed % stop** — hard floor (default 2%)
-- **Take-profit** — 2× stop distance (configurable R:R)
-- **Kelly fraction** — position size proportional to edge
-- **Portfolio heat** — max total open risk (default 20%)
-- **Drawdown circuit breaker** — halts trading at 10% drawdown
+The trained model and data/cache files are tracked in the repository, so deployment does not require a separate training step. `scikit-learn` is pinned to the version used to serialize the checked-in model. Optional integrations may need credentials: keep secrets out of source control and configure them in the app's Streamlit Cloud **Settings → Secrets** only if you enable those integrations. `.env` is ignored by Git.
 
----
+## Update your changes on GitHub
 
-## Environment Variables
+After editing files locally, review the changes and push them to the selected branch:
 
 ```bash
-# Data sources
-ALPHA_VANTAGE_KEY=...
-ALPACA_API_KEY=...
-ALPACA_SECRET_KEY=...
-ALPACA_BASE_URL=https://paper-api.alpaca.markets
-
-# Alerts
-SLACK_WEBHOOK_URL=...
-ALERT_EMAIL=...
-
-# API
-API_RATE_LIMIT=10
-DEFAULT_TICKER=NFLX
+git status
+git diff
+git add README.md app requirements.txt .streamlit .github  # adjust this list to your changes
+git commit -m "Update Streamlit app and documentation"
+git push origin main
 ```
 
----
+To stage every changed and newly added file instead, use `git add -A` in place of the targeted `git add` command. Do not commit `.env`, credentials, or other secrets.
 
-## Project Structure
+## Install and run tests
 
-```
-src/
-  data_loader.py       # yfinance + Alpha Vantage + Alpaca + CSV
-  feature_utils.py     # shared feature computation
-  modeling.py          # ManualStackingRegressor + conformal
-  risk_manager.py      # ATR stop, Kelly, circuit breaker
-  model_registry.py    # versioned model saves
-  monitoring.py        # Slack/email alerts
-  regime_detection.py  # HMM Bull/Bear/Sideways
-  backtest.py          # Kelly + Sharpe/Sortino/Calmar
-  drift.py             # PSI + KS drift detection
-  paper_trade.py       # day-by-day live simulation
-  sentiment.py         # VADER news scoring
-  tuning.py            # Optuna hyperparameter search
-api/main.py            # FastAPI v2.0
-app/app.py             # Streamlit 9-tab dashboard
-tests/                 # 40+ unit tests
-.github/workflows/     # CI + weekly retraining
+```bash
+python -m pip install -r requirements-dev.txt
+pytest -q
 ```
 
----
+The GitHub Actions test workflow runs on pushes and pull requests targeting `main`.
 
-## Tech Stack
+## Optional training and configuration
 
-Python · XGBoost · LightGBM · Scikit-learn · hmmlearn · Plotly · FastAPI · Streamlit · Optuna · Pytest · GitHub Actions · python-dotenv · yfinance · Alpha Vantage · Alpaca Markets
+The basic dashboard uses the model already in `models/model.pkl`; retraining is not needed just to launch it. To retrain from the included CSV, install `requirements-dev.txt` and run:
+
+```bash
+python main.py --source csv --ticker NFLX
+```
+
+Other data providers and alerting features can require API credentials. See `.env.example` for the supported variable names. Never commit real credentials. Training writes updated artifacts under `models/` and `outputs/`.
+
+## Project structure
+
+```text
+app/app.py                 Streamlit dashboard (Community Cloud entrypoint)
+api/main.py                FastAPI service
+main.py                    Training and evaluation pipeline
+src/                       Data, feature, modeling, risk, and monitoring modules
+models/model.pkl           Trained model used by the dashboard
+data/netflix.csv           Bundled sample market data
+outputs/features_cache.parquet  Cached engineered features
+requirements.txt           Runtime dependencies for Streamlit
+requirements-dev.txt       Runtime plus test and development dependencies
+tests/                     Pytest suite
+.github/workflows/         CI and scheduled retraining workflows
+```
+
+## Main technologies
+
+Python 3.11 · Streamlit · Plotly · pandas · scikit-learn · XGBoost · LightGBM · yfinance · FastAPI · pytest
+
+## License
+
+MIT — see [LICENSE](LICENSE).
