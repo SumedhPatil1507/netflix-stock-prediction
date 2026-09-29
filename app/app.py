@@ -128,9 +128,10 @@ tabs = st.tabs([
     "⚠️ Risk",
     "🔬 Drift Monitor",
     "🔍 Explainability",
+    "🤖 AI Narrative",
     "🏗 Architecture",
 ])
-tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk, tab_drift, tab_shap, tab_arch = tabs
+tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk, tab_drift, tab_shap, tab_narrative, tab_arch = tabs
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — MARKET OVERVIEW (Candlestick + indicators)
@@ -848,7 +849,274 @@ with tab_shap:
         )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 9 — ARCHITECTURE
+# TAB 9 — AI NARRATIVE
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_narrative:
+    st.subheader("AI Market Narrator")
+    st.caption("Agentic RAG system that explains model predictions with citation-backed narratives from earnings calls and financial news.")
+    
+    # Check if narrator dependencies are available
+    narrator_available = False
+    try:
+        from src.narrator import NarratorGraph, VectorStore, CorpusManager
+        from src.agent_traces import get_tracer
+        narrator_available = True
+    except ImportError as e:
+        st.warning(f"""
+        **AI Narrator dependencies not fully installed.**
+        
+        To enable the AI Narrator features, install the additional dependencies:
+        ```bash
+        pip install langchain langchain-openai langgraph langfuse chromadb sentence-transformers ragas openai
+        ```
+        
+        Error: {str(e)}
+        
+        The rest of the dashboard will continue to work normally.
+        """)
+    
+    if narrator_available:
+        # Initialize narrator components
+        @st.cache_resource(show_spinner="Loading AI Narrator components...")
+        def load_narrator_components():
+            try:
+                vector_store = VectorStore()
+                corpus_manager = CorpusManager()
+                narrator_graph = NarratorGraph(
+                    vector_store=vector_store,
+                    corpus_manager=corpus_manager
+                )
+                tracer = get_tracer()
+                
+                # Initialize vector store with sample data if empty
+                stats = vector_store.get_collection_stats()
+                if stats["document_count"] == 0:
+                    narrator_graph.initialize_vector_store("NFLX")
+                
+                return narrator_graph, vector_store, tracer
+            except Exception as e:
+                st.error(f"Error loading narrator components: {e}")
+                return None, None, None
+        
+        narrator_graph, vector_store, tracer = load_narrator_components()
+        
+        if narrator_graph is None:
+            st.warning("AI Narrator components could not be loaded. Please check the error above.")
+        else:
+            # Show vector store stats
+            stats = vector_store.get_collection_stats()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Documents in Vector Store", stats["document_count"])
+            c2.metric("Collection Name", stats["collection_name"])
+            c3.metric("Embedding Model", stats["embedding_model"])
+            
+            st.markdown("---")
+            
+            # Generate narrative section
+            st.markdown("#### Generate Market Narrative")
+            
+            # Get current price from live data
+            current_price = df_source["Close"].iloc[-1] if not df_source.empty else 650.0
+            
+            # Input prediction parameters
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                input_prediction = st.number_input(
+                    "Predicted Return (%)",
+                    value=0.5,
+                    min_value=-10.0,
+                    max_value=10.0,
+                    step=0.1,
+                    help="Model's predicted next-day return"
+                )
+            with col2:
+                input_ci_lower = st.number_input(
+                    "CI Lower Bound (%)",
+                    value=-0.5,
+                    min_value=-10.0,
+                    max_value=10.0,
+                    step=0.1,
+                    help="Lower bound of conformal prediction interval"
+                )
+            with col3:
+                input_ci_upper = st.number_input(
+                    "CI Upper Bound (%)",
+                    value=1.5,
+                    min_value=-10.0,
+                    max_value=10.0,
+                    step=0.1,
+                    help="Upper bound of conformal prediction interval"
+                )
+            
+            current_price = st.number_input(
+                "Current Price ($)",
+                value=current_price,
+                min_value=1.0,
+                max_value=10000.0,
+                step=1.0
+            )
+            
+            if st.button("Generate AI Narrative", type="primary"):
+                with st.spinner("Generating narrative with RAG pipeline..."):
+                    try:
+                        # Run the narrator workflow
+                        result = narrator_graph.run(
+                            ticker=ticker,
+                            prediction=input_prediction / 100,  # Convert to decimal
+                            conformal_interval=(input_ci_lower / 100, input_ci_upper / 100),
+                            current_price=current_price
+                        )
+                        
+                        if result["success"]:
+                            # Display the narrative
+                            st.markdown("### Generated Market Narrative")
+                            st.markdown(result["narrative"])
+                            
+                            # Display metadata
+                            st.markdown("---")
+                            st.markdown("#### Narrative Metadata")
+                            m1, m2, m3, m4 = st.columns(4)
+                            m1.metric("Sentiment", result["sentiment"].title())
+                            m2.metric("Prediction", f"{input_prediction:+.2f}%")
+                            m3.metric("Sources Used", result["sources_used"])
+                            m4.metric("Query", result["query"][:30] + "..." if len(result["query"]) > 30 else result["query"])
+                            
+                            # Display citations
+                            if result["citations"]:
+                                st.markdown("#### Source Citations")
+                                for i, citation in enumerate(result["citations"], 1):
+                                    with st.expander(f"Citation {i}: {citation['title']}"):
+                                        st.markdown(f"**Source:** {citation['source']}")
+                                        st.markdown(f"**Date:** {citation['date']}")
+                                        if citation.get('url'):
+                                            st.markdown(f"**URL:** {citation['url']}")
+                            
+                            # Display retrieved documents
+                            if result["retrieved_documents"]:
+                                st.markdown("#### Retrieved Documents")
+                                for i, doc in enumerate(result["retrieved_documents"], 1):
+                                    with st.expander(f"Document {i}: {doc['metadata'].get('title', 'Unknown')}"):
+                                        st.markdown(f"**Source:** {doc['metadata'].get('source', 'Unknown')}")
+                                        st.markdown(f"**Date:** {doc['metadata'].get('date', 'Unknown')}")
+                                        st.markdown(f"**Content:** {doc['text']}")
+                                        if doc.get('distance'):
+                                            relevance = 1 - doc['distance']
+                                            st.metric("Relevance Score", f"{relevance:.3f}")
+                            
+                            # Log the run
+                            if tracer:
+                                tracer.log_graph_run(
+                                    workflow_name="narrator_graph",
+                                    inputs={
+                                        "ticker": ticker,
+                                        "prediction": input_prediction,
+                                        "conformal_interval": (input_ci_lower, input_ci_upper)
+                                    },
+                                    outputs=result
+                                )
+                        
+                        else:
+                            st.error(f"Error generating narrative: {result.get('error', 'Unknown error')}")
+                    
+                    except Exception as e:
+                        st.error(f"Error in narrative generation: {e}")
+                        st.exception(e)
+            
+            st.markdown("---")
+            
+            # Vector store management
+            st.markdown("#### Vector Store Management")
+            
+            col_a, col_b = st.columns(2)
+            with col_a:
+                if st.button("Reinitialize Vector Store"):
+                    with st.spinner("Reinitializing vector store..."):
+                        try:
+                            narrator_graph.initialize_vector_store(ticker)
+                            st.success("Vector store reinitialized successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error reinitializing: {e}")
+            
+            with col_b:
+                if st.button("Clear Vector Store"):
+                    with st.spinner("Clearing vector store..."):
+                        try:
+                            vector_store.clear_collection()
+                            st.success("Vector store cleared successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error clearing: {e}")
+            
+            # Evaluation section
+            st.markdown("---")
+            st.markdown("#### Narrative Evaluation")
+            
+            st.markdown("""
+            **RAGAS-based Evaluation**: The system includes RAGAS metrics to evaluate narrative faithfulness 
+            against retrieved sources. This ensures the AI narratives are grounded in the actual retrieved documents.
+            
+            **Metrics Available:**
+            - **Faithfulness**: Measures how well the narrative aligns with retrieved context
+            - **Answer Relevancy**: Measures how relevant the narrative is to the original query
+            - **Context Precision**: Measures the relevance of retrieved documents
+            
+            To run evaluation, use the evaluation script in `src/narrator/eval.py`.
+            """)
+            
+            # System explanation
+            st.markdown("---")
+            st.markdown("#### How It Works")
+            
+            st.markdown("""
+            **AI Market Narrator Pipeline:**
+            
+            1. **Retriever Agent**: Uses ChromaDB vector store to find relevant earnings call transcripts 
+               and financial news articles based on the prediction context.
+            
+            2. **Synthesis Agent**: Reads the model prediction, conformal interval, and retrieved documents 
+               to generate a plain-English narrative explaining the bullish/bearish stance.
+            
+            3. **Citation System**: Automatically extracts and formats citations from the retrieved documents 
+               to provide transparency and source attribution.
+            
+            4. **Observability**: Every agent run is logged to Langfuse for monitoring and debugging.
+            
+            5. **Evaluation**: RAGAS-based evaluation ensures narrative faithfulness against retrieved sources.
+            
+            **Technologies Used:**
+            - **LangGraph**: Multi-agent workflow orchestration
+            - **ChromaDB**: Vector database for semantic search
+            - **LangChain**: LLM integration and agent framework
+            - **Langfuse**: Observability and tracing
+            - **RAGAS**: Evaluation metrics for RAG systems
+            """)
+    else:
+        # Show information about what the AI Narrator would do
+        st.markdown("---")
+        st.markdown("#### AI Market Narrator Features")
+        
+        st.markdown("""
+        The AI Market Narrator provides:
+        
+        - **Agentic RAG System**: Multi-agent workflow with retriever and synthesis agents
+        - **ChromaDB Vector Store**: Semantic search over earnings call transcripts and financial news
+        - **Citation System**: Automatic source attribution for all narrative claims
+        - **Langfuse Observability**: Comprehensive logging and tracing of all agent runs
+        - **RAGAS Evaluation**: Faithfulness scoring to ensure narratives are grounded in retrieved sources
+        
+        **To enable these features, install the additional dependencies:**
+        ```bash
+        pip install langchain langchain-openai langgraph langfuse chromadb sentence-transformers ragas openai
+        ```
+        
+        **Required Environment Variables:**
+        - `OPENAI_API_KEY`: Your OpenAI API key for LLM-powered narrative generation
+        - `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`: Optional, for observability
+        """)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 10 — ARCHITECTURE
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_arch:
     st.subheader("System Architecture & Edge")
