@@ -1,0 +1,203 @@
+# =============================================================================
+# Alpha Engine — Docker Compose
+# 6 services: timescaledb · redis · api · worker · flower · streamlit
+#
+# Usage:
+#   docker-compose up --build -d          # start all
+#   docker-compose logs -f worker         # tail Celery logs
+#   docker-compose down -v                # stop + remove volumes
+#
+# Required env file: .env  (copy from .env.example and fill in secrets)
+# =============================================================================
+
+version: "3.9"
+
+# ── Shared network ────────────────────────────────────────────────────────────
+networks:
+  alpha_net:
+    driver: bridge
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  timescale_data:
+    driver: local
+  redis_data:
+    driver: local
+  model_artifacts:
+    driver: local
+
+# =============================================================================
+# SERVICES
+# =============================================================================
+services:
+
+  # ── 1. TimescaleDB (PostgreSQL + time-series extension) ───────────────────
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: alpha_timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${DB_NAME:-alphaengine}
+      POSTGRES_USER:     ${DB_USER:-alphauser}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    networks:
+      - alpha_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-alphauser} -d ${DB_NAME:-alphaengine}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── 2. Redis (Celery broker + result backend) ──────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: alpha_redis
+    restart: unless-stopped
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - alpha_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── 3. FastAPI backend ─────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: alpha-engine:latest
+    container_name: alpha_api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override DB host to service name for Docker networking
+      DB_HOST:     timescaledb
+      REDIS_URL:   redis://redis:6379
+      API_BASE_URL: http://api:8000
+    command: >
+      uvicorn api.main:app
+      --host 0.0.0.0
+      --port 8000
+      --workers 2
+      --loop uvloop
+      --http httptools
+    ports:
+      - "8000:8000"
+    volumes:
+      - model_artifacts:/app/models
+      - ./outputs:/app/outputs
+      - ./data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - alpha_net
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── 4. Celery worker (CPU-bound tasks) ────────────────────────────────────
+  worker:
+    image: alpha-engine:latest
+    container_name: alpha_worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST:   timescaledb
+      REDIS_URL: redis://redis:6379
+    command: >
+      celery -A worker.celery_app worker
+      --loglevel=info
+      --concurrency=2
+      --max-tasks-per-child=50
+      --queues=celery
+    volumes:
+      - model_artifacts:/app/models
+      - ./outputs:/app/outputs
+      - ./data:/app/data
+      - ./logs:/app/logs
+    networks:
+      - alpha_net
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: "2G"
+
+  # ── 5. Flower (Celery task monitor UI) ───────────────────────────────────
+  flower:
+    image: mher/flower:2.0
+    container_name: alpha_flower
+    restart: unless-stopped
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379
+      FLOWER_PORT:       5555
+      FLOWER_BASIC_AUTH: ${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-alphaflower}
+    ports:
+      - "5555:5555"
+    networks:
+      - alpha_net
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: >
+      celery
+      --broker=redis://redis:6379
+      flower
+      --port=5555
+      --basic_auth=${FLOWER_USER:-admin}:${FLOWER_PASSWORD:-alphaflower}
+
+  # ── 6. Streamlit (pure presentation layer) ───────────────────────────────
+  streamlit:
+    image: alpha-engine:latest
+    container_name: alpha_streamlit
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      API_BASE_URL: http://api:8000
+    command: >
+      streamlit run app/app.py
+      --server.port=8501
+      --server.address=0.0.0.0
+      --server.headless=true
+      --server.fileWatcherType=none
+      --browser.gatherUsageStats=false
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./app:/app/app:ro
+      - ./.streamlit:/app/.streamlit:ro
+    networks:
+      - alpha_net
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8501/_stcore/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

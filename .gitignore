@@ -13,3 +13,5 @@ logs/
 .mypy_cache/
 dist/
 build/
+.streamlit/secrets.toml
+data/chroma_db/

@@ -176,6 +176,11 @@ class RiskManager:
             )
 
         shares = int(max_risk_dollars / risk_per_share)
+        
+        # Limit by max position size limit (position_value <= portfolio_value * max_position_pct)
+        max_shares = int((self.cfg.portfolio_value * self.cfg.max_position_pct) / last_price)
+        shares = min(shares, max_shares)
+
         if shares < 1:
             shares = 1
 

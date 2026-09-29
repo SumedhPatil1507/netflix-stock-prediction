@@ -1,16 +1,15 @@
 """
 Multi-source data ingestion layer.
 Supports:
-  - yfinance (daily, free)
+  - TimescaleDB (hardened real-time persistence)
   - Alpha Vantage (daily + intraday 1min/5min, free tier)
   - Alpaca Markets (minute bars, free paper trading account)
-  - CSV fallback
 
 Set API keys in .env:
   ALPHA_VANTAGE_KEY=your_key
   ALPACA_API_KEY=your_key
   ALPACA_SECRET_KEY=your_secret
-  ALPACA_BASE_URL=https://paper-api.alpaca.markets  (paper) or https://api.alpaca.markets (live)
+  ALPACA_BASE_URL=https://paper-api.alpaca.markets
 """
 from __future__ import annotations
 import logging
@@ -19,6 +18,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from typing import Literal
+from src.time_series_db import save_ohlcv_data, load_ohlcv_data
 
 logger = logging.getLogger(__name__)
 
@@ -27,75 +27,59 @@ DEFAULT_TICKER = os.getenv("DEFAULT_TICKER", "NFLX")
 # Supported intervals for intraday
 Interval = Literal["1min", "5min", "15min", "30min", "60min", "daily"]
 
-
 def load_data(
-    source: str = "csv",
+    source: str = "database",
     ticker: str = DEFAULT_TICKER,
     interval: Interval = "daily",
     days_back: int = 365,
 ) -> pd.DataFrame:
     """
-    Unified data loader supporting multiple sources and intervals.
+    Unified data loader supporting database lookup and API bootstrap.
 
     Parameters
     ----------
-    source   : "csv" | "yfinance" | "alphavantage" | "alpaca"
+    source   : "database" | "alphavantage" | "alpaca"
     ticker   : stock symbol
     interval : data frequency (daily or intraday)
-    days_back: how many calendar days of history to fetch (intraday sources)
+    days_back: how many calendar days of history to fetch
     """
     source = source.lower()
-    if source in ("live", "yfinance"):
-        return _load_yfinance(ticker, interval)
+    ticker = ticker.upper()
+
+    # Treat old csv / yfinance / live source requests as database requests
+    if source in ("database", "csv", "yfinance", "live"):
+        df = load_ohlcv_data(ticker, days_back)
+        if not df.empty:
+            logger.info(f"Loaded {len(df)} rows from TimescaleDB for {ticker}")
+            return df
+        
+        # If DB has no data, bootstrap using Alpaca
+        logger.info(f"TimescaleDB storage empty for {ticker}. Bootstrapping from Alpaca API...")
+        source = "alpaca"
+
     if source == "alphavantage":
-        return _load_alpha_vantage(ticker, interval)
-    if source == "alpaca":
-        return _load_alpaca(ticker, interval, days_back)
-    return _load_csv(ticker)
+        df = _load_alpha_vantage(ticker, interval)
+    elif source == "alpaca":
+        df = _load_alpaca(ticker, interval, days_back)
+    else:
+        df = load_ohlcv_data(ticker, days_back)
 
-
-# ── yfinance ──────────────────────────────────────────────────────────────────
-def _load_yfinance(ticker: str, interval: Interval = "daily") -> pd.DataFrame:
-    try:
-        import yfinance as yf
-        yf_interval_map = {
-            "1min": "1m", "5min": "5m", "15min": "15m",
-            "30min": "30m", "60min": "60m", "daily": "1d",
-        }
-        yf_period_map = {
-            "1min": "7d", "5min": "60d", "15min": "60d",
-            "30min": "60d", "60min": "730d", "daily": "max",
-        }
-        yf_int = yf_interval_map.get(interval, "1d")
-        period = yf_period_map.get(interval, "max")
-
-        logger.info(f"yfinance: {ticker} interval={yf_int} period={period}")
-        df = yf.Ticker(ticker).history(period=period, interval=yf_int)
-        df = df.reset_index()
-        date_col = "Datetime" if "Datetime" in df.columns else "Date"
-        df = df.rename(columns={date_col: "Date"})
-        if hasattr(df["Date"].dtype, "tz") and df["Date"].dtype.tz is not None:
-            df["Date"] = df["Date"].dt.tz_localize(None)
-        df["Stock Splits"] = 0
-        df = df[["Date", "Open", "High", "Low", "Close", "Volume", "Stock Splits"]]
-        logger.info(f"yfinance: fetched {len(df):,} rows")
-        return _validate(df)
-    except Exception as e:
-        logger.warning(f"yfinance failed ({e}), falling back to CSV")
-        return _load_csv(ticker)
-
+    if not df.empty:
+        # Cache raw data in TimescaleDB for future queries
+        save_ohlcv_data(df, ticker)
+        
+    return df
 
 # ── Alpha Vantage ─────────────────────────────────────────────────────────────
 def _load_alpha_vantage(ticker: str, interval: Interval = "daily") -> pd.DataFrame:
     """
     Alpha Vantage REST API.
-    Free tier: 25 requests/day, 500 requests/month.
-    Set ALPHA_VANTAGE_KEY in .env
+    Free tier: 25 requests/day.
     """
     api_key = os.getenv("ALPHA_VANTAGE_KEY")
     if not api_key:
-        logger.warning("ALPHA_VANTAGE_KEY not set — falling back to yfinance")
-        return _load_yfinance(ticker, interval)
+        logger.warning("ALPHA_VANTAGE_KEY not set — falling back to TimescaleDB")
+        return load_ohlcv_data(ticker)
 
     try:
         import requests
@@ -144,8 +128,8 @@ def _load_alpha_vantage(ticker: str, interval: Interval = "daily") -> pd.DataFra
                 })
 
         if not rows:
-            logger.warning("Alpha Vantage returned no data — falling back to yfinance")
-            return _load_yfinance(ticker, interval)
+            logger.warning("Alpha Vantage returned no data — falling back to TimescaleDB")
+            return load_ohlcv_data(ticker)
 
         df = pd.DataFrame(rows).sort_values("Date").reset_index(drop=True)
         df["Stock Splits"] = 0
@@ -153,25 +137,22 @@ def _load_alpha_vantage(ticker: str, interval: Interval = "daily") -> pd.DataFra
         return _validate(df)
 
     except Exception as e:
-        logger.warning(f"Alpha Vantage failed ({e}) — falling back to yfinance")
-        return _load_yfinance(ticker, interval)
-
+        logger.warning(f"Alpha Vantage failed ({e}) — falling back to TimescaleDB")
+        return load_ohlcv_data(ticker)
 
 # ── Alpaca Markets ────────────────────────────────────────────────────────────
 def _load_alpaca(ticker: str, interval: Interval = "daily",
                  days_back: int = 365) -> pd.DataFrame:
     """
-    Alpaca Markets REST API — minute/hour bars.
-    Free paper trading account gives access to historical bars.
-    Set ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL in .env
+    Alpaca Markets REST API.
     """
     api_key    = os.getenv("ALPACA_API_KEY")
     secret_key = os.getenv("ALPACA_SECRET_KEY")
     base_url   = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 
     if not api_key or not secret_key:
-        logger.warning("Alpaca keys not set — falling back to yfinance")
-        return _load_yfinance(ticker, interval)
+        logger.warning("Alpaca keys not set — falling back to TimescaleDB")
+        return load_ohlcv_data(ticker, days_back)
 
     try:
         import requests
@@ -205,8 +186,8 @@ def _load_alpaca(ticker: str, interval: Interval = "daily",
             params["page_token"] = next_token
 
         if not rows:
-            logger.warning("Alpaca returned no data — falling back to yfinance")
-            return _load_yfinance(ticker, interval)
+            logger.warning("Alpaca returned no data — falling back to TimescaleDB")
+            return load_ohlcv_data(ticker, days_back)
 
         df = pd.DataFrame(rows).sort_values("Date").reset_index(drop=True)
         df["Stock Splits"] = 0
@@ -214,19 +195,8 @@ def _load_alpaca(ticker: str, interval: Interval = "daily",
         return _validate(df)
 
     except Exception as e:
-        logger.warning(f"Alpaca failed ({e}) — falling back to yfinance")
-        return _load_yfinance(ticker, interval)
-
-
-# ── CSV fallback ──────────────────────────────────────────────────────────────
-def _load_csv(ticker: str = DEFAULT_TICKER) -> pd.DataFrame:
-    path = f"data/{ticker.upper()}.csv"
-    if not os.path.exists(path):
-        path = "data/netflix.csv"
-    logger.info(f"Loading data from {path}")
-    df = pd.read_csv(path, sep="\t")
-    return _validate(df)
-
+        logger.warning(f"Alpaca failed ({e}) — falling back to TimescaleDB")
+        return load_ohlcv_data(ticker, days_back)
 
 # ── Validation ────────────────────────────────────────────────────────────────
 def _validate(df: pd.DataFrame) -> pd.DataFrame:
