@@ -150,3 +150,37 @@ def get_drift_report(ticker: str) -> dict:
 
 def get_feature_importance() -> dict:
     return _get("/explainability/importance")
+
+
+# ── AI Market Narrator ────────────────────────────────────────────────────────
+def get_narrative(ticker: str = "NFLX", query: str | None = None) -> dict:
+    """
+    Fetch AI Market Narrator synthesis and citations.
+    Falls back to direct local agent invocation if API backend is offline.
+    """
+    res = _get("/narrative", params={"ticker": ticker, "query": query} if query else {"ticker": ticker})
+    if "error" not in res and "narrative" in res:
+        return res
+    
+    # Graceful direct fallback for local standalone Streamlit executions
+    try:
+        from src.narrator.graph import run_market_narrator
+        return run_market_narrator(ticker=ticker, custom_query=query)
+    except Exception as e:
+        return {"error": f"Failed to generate narrative: {e}"}
+
+
+def get_narrative_traces(limit: int = 15) -> dict:
+    """Fetch recent Langfuse / local agent traces and telemetry."""
+    res = _get("/narrative/traces", params={"limit": limit})
+    if "error" not in res and "traces" in res:
+        return res
+    
+    try:
+        from src.agent_traces import get_recent_traces, get_trace_summary
+        return {
+            "summary": get_trace_summary(),
+            "traces": get_recent_traces(limit=limit),
+        }
+    except Exception as e:
+        return {"error": str(e), "traces": []}

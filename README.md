@@ -95,9 +95,20 @@ alpha-engine/
 │       ├── 4_🔬_Backtest_Lab.py        # Async Celery backtest + polling spinner
 │       ├── 5_🧬_Drift_Monitor.py       # Async Celery drift check + PSI heatmap
 │       └── 6_⚙️_Model_Registry.py     # Feature importance · model card
+├── eval_narrative.py        # RAGAS automated faithfulness & relevancy evaluation CLI
+├── agent_traces.py          # Langfuse observability and trace logging interface
 ├── src/
+│   ├── narrator/            # AI Market Narrator (Agentic RAG & Synthesis Layer)
+│   │   ├── corpus.py        # Earnings call transcripts & financial news dataset
+│   │   ├── vector_store.py  # ChromaDB vector store + TF-IDF semantic indexer
+│   │   ├── retriever_agent.py # Retriever agent formulating queries & citations
+│   │   ├── synthesis_agent.py # Synthesis agent translating model & conformal bounds
+│   │   ├── graph.py         # LangGraph multi-agent orchestration pipeline
+│   │   └── eval.py          # RAGAS metric scoring algorithms
+│   ├── agent_traces.py      # Langfuse cloud & local JSONL trace logger
 │   ├── feature_utils.py     # 51 technical features — single source of truth
 │   ├── modeling.py          # ManualStackingRegressor + conformal calibration
+│   ├── model_registry.py    # Model versioning, metadata & pickle registry
 │   ├── risk_manager.py      # Kelly fraction · ATR stop-loss · circuit breaker
 │   ├── backtest.py          # Strategy simulation (binary + Kelly + B&H)
 │   ├── paper_trade.py       # Day-by-day live data simulation
@@ -111,8 +122,94 @@ alpha-engine/
 ├── docker-compose.yml       # 6-service orchestration
 ├── Dockerfile               # Multi-stage Python 3.11 image
 ├── .env.example             # All environment variables documented
-├── requirements.txt         # Dependencies (yfinance removed)
+├── requirements.txt         # Dependencies (LangGraph, ChromaDB, Langfuse, Ragas)
 └── main.py                  # Training pipeline entrypoint
+```
+
+---
+
+## 🤖 AI Market Narrator (Agentic RAG Layer)
+
+The **AI Market Narrator** is a multi-agent quantitative synthesis layer built on **LangGraph**, bridging machine learning forecasts with fundamental market intelligence.
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                               AI MARKET NARRATOR PIPELINE                               │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+                                           │
+                                           ▼
+               ┌────────────────────────────────────────────────────────┐
+               │                  Retriever Agent Node                  │
+               │  • Formulates targeted multi-aspect retrieval queries  │
+               │  • Vector RAG search over ChromaDB earnings & news     │
+               │  • Ranks & structures citation metadata [1], [2], ...  │
+               └───────────────────────────┬────────────────────────────┘
+                                           │
+                                           ▼
+               ┌────────────────────────────────────────────────────────┐
+               │                  Synthesis Agent Node                  │
+               │  • Ingests model_registry.py latest prediction + CP    │
+               │  • Synthesizes 90% conformal risk envelope & stance    │
+               │  • Writes plain-English citation-backed explanation    │
+               └───────────────────────────┬────────────────────────────┘
+                                           │
+                                           ▼
+               ┌────────────────────────────────────────────────────────┐
+               │              RAGAS & Langfuse Observability             │
+               │  • Scores Faithfulness, Relevancy, Citation Grounding  │
+               │  • Ships execution trace & spans to Langfuse Cloud/JSON│
+               └────────────────────────────────────────────────────────┘
+```
+
+### Key Components
+
+1. **Retriever Agent (`src/narrator/retriever_agent.py`)**:
+   - Queries **ChromaDB** containing recent earnings call transcripts (operating margins, free cash flow, ad-tier momentum, subscriber retention) and breaking financial news.
+   - Extracts structured citation blocks with document ID, publication date, relevance score, and verified excerpts.
+
+2. **Synthesis Agent (`src/narrator/synthesis_agent.py`)**:
+   - Connects directly to `src/model_registry.py` and `src/uncertainty.py`.
+   - Explains *why* the stacking ensemble is **Bullish/Bearish**, breaks down the **90% Conformal Prediction Interval** `[Lower Price, Upper Price]`, and backs up every thesis point with citations `[1]`, `[2]`.
+
+3. **LangGraph Pipeline (`src/narrator/graph.py`)**:
+   - Multi-agent state graph orchestrating `retriever_node` ➔ `synthesis_node` ➔ `eval_and_trace_node`.
+
+4. **Observability via Langfuse (`agent_traces.py` & `src/agent_traces.py`)**:
+   - Captures trace IDs, latency breakdown per agent node, prompt/generation spans, and RAG retrieval quality.
+   - Live dashboard integration with Langfuse Cloud (`LANGFUSE_PUBLIC_KEY` in `.env`) and structured JSONL logging fallback in `logs/agent_traces.jsonl`.
+
+5. **RAGAS Evaluation Framework (`eval_narrative.py` & `src/narrator/eval.py`)**:
+   - Evaluates narrative outputs against retrieved corpus:
+     - **Faithfulness**: Grounding of empirical claims against earnings transcripts.
+     - **Answer Relevancy**: Alignment with quantitative model return % and conformal uncertainty bounds.
+     - **Citation Grounding**: Precision of bracketed `[Doc #]` references.
+     - **Context Precision**: Signal-to-noise ratio of top retrieved documents.
+
+### Running the RAGAS Narrative Evaluation CLI
+
+```bash
+python eval_narrative.py --ticker NFLX
+```
+
+Output:
+```
+======================================================================
+  AI Market Narrator - RAGAS Faithfulness & Relevancy Evaluation
+  Ticker: NFLX  |  Timestamp: 2026-09-28 23:14:11
+======================================================================
+[+] Pipeline executed successfully in 0.00 ms
+[+] Langfuse Trace ID: trace_3c76e77371cd
+
+----------------------------------------------------------------------
+                      RAGAS EVALUATION METRICS                        
+----------------------------------------------------------------------
+  - Faithfulness Score:        0.7778  (Grounding in retrieved context)
+  - Answer Relevancy:          1.0000  (Alignment with model signal & CP)
+  - Citation Grounding:        1.0000  (Valid [Doc #] reference ratio)
+  - Context Precision:         0.6447  (Retrieved corpus signal quality)
+  ------------------------------------------------------------------
+  [+] RAGAS Composite Score:   0.8756 / 1.0000
+----------------------------------------------------------------------
 ```
 
 ---
@@ -300,6 +397,8 @@ Data is automatically cached in TimescaleDB (or SQLite fallback) after the first
 | 🔬 Backtest Lab | Page 4 | Async job · equity curves · rolling Sharpe |
 | 🧬 Drift Monitor | Page 5 | Async job · PSI heatmap · KS test table |
 | ⚙️ Model Registry | Page 6 | Feature importance · cumulative curve · model card |
+| 🎙️ AI Market Narrator | Page 7 | Multi-Agent RAG synthesis · Conformal envelope · RAGAS radar · Citations |
+
 
 ---
 
@@ -405,6 +504,8 @@ make up           # docker compose up --build
 | `/risk/matrix` | POST | Full risk matrix |
 | `/execute` | POST | Submit order (Alpaca/paper) |
 | `/sentiment` | GET | VADER news sentiment |
+| `/narrative` | GET/POST | Multi-agent RAG synthesis & citations |
+| `/narrative/traces` | GET | Langfuse & structured execution traces |
 | `/drift` | GET | PSI + KS drift report |
 | `/explainability/importance` | GET | Feature importances |
 | `/api/v1/tasks/backtest` | POST | Submit async backtest job |

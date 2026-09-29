@@ -220,6 +220,52 @@ def registry():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── AI Market Narrator endpoints ──────────────────────────────────────────────
+class NarrativeRequest(BaseModel):
+    ticker:       str = Field("NFLX", description="Ticker symbol")
+    custom_query: Optional[str] = Field(None, description="Optional custom focus query")
+
+
+@app.get("/narrative")
+def get_narrative(ticker: str = "NFLX", query: Optional[str] = None):
+    """
+    Run the LangGraph AI Market Narrator multi-agent pipeline.
+    Combines ChromaDB RAG over earnings calls/news with model prediction + conformal bounds.
+    """
+    try:
+        from src.narrator.graph import run_market_narrator
+        result = run_market_narrator(ticker=ticker, custom_query=query)
+        return result
+    except Exception as e:
+        logger.error(f"Narrator pipeline failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/narrative")
+def post_narrative(req: NarrativeRequest):
+    """POST endpoint for narrative generation."""
+    try:
+        from src.narrator.graph import run_market_narrator
+        result = run_market_narrator(ticker=req.ticker, custom_query=req.custom_query)
+        return result
+    except Exception as e:
+        logger.error(f"Narrator pipeline failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/narrative/traces")
+def get_traces(limit: int = 15):
+    """Get recent Langfuse / local agent traces and telemetry."""
+    try:
+        from src.agent_traces import get_recent_traces, get_trace_summary
+        return {
+            "summary": get_trace_summary(),
+            "traces": get_recent_traces(limit=limit),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Risk & Execution endpoints ────────────────────────────────────────────────
 
 class RiskRequest(BaseModel):
