@@ -18,3 +18,6 @@ build/
 data/chroma_db/
 data/news/
 data/transcripts/
+
+# Kiro / workflow agent artefacts
+.agents/
