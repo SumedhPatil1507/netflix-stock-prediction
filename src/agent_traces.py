@@ -166,7 +166,8 @@ class AgentTracer:
     ) -> None:
         """
         Log a retriever agent run.
-        
+        JSONL write is handled by trace_agent_run's finally block — no duplicate call here.
+
         Args:
             query: Query used for retrieval
             ticker: Stock ticker symbol
@@ -177,7 +178,7 @@ class AgentTracer:
             with self.trace_agent_run(
                 agent_name="retriever_agent",
                 inputs={"query": query, "ticker": ticker},
-                metadata=metadata
+                metadata={"num_documents": len(results.get("documents", [])), **(metadata or {})}
             ) as trace:
                 if trace:
                     trace.update(
@@ -187,8 +188,6 @@ class AgentTracer:
                             "ticker": ticker
                         }
                     )
-                    
-                    # Log each retrieved document
                     for i, doc in enumerate(results.get("documents", [])):
                         trace.span(
                             name=f"document_{i}",
@@ -199,16 +198,7 @@ class AgentTracer:
                                 "relevance": 1 - doc.get("distance", 0) if doc.get("distance") else None
                             }
                         )
-            
-            _append_jsonl(
-                agent_name="retriever_agent",
-                inputs={"query": query, "ticker": ticker},
-                outputs={"num_documents": len(results.get("documents", []))},
-                duration_seconds=0.0,
-                ticker=ticker,
-            )
             logger.info(f"Logged retriever run for {ticker}")
-            
         except Exception as e:
             logger.error(f"Error logging retriever run: {e}")
     
@@ -256,13 +246,6 @@ class AgentTracer:
                             input=citation
                         )
             
-            _append_jsonl(
-                agent_name="synthesis_agent",
-                inputs={"prediction": prediction, "ticker": ticker},
-                outputs={"narrative_length": len(narrative), "num_citations": len(citations)},
-                duration_seconds=0.0,
-                ticker=ticker,
-            )
             logger.info(f"Logged synthesis run for {ticker}")
             
         except Exception as e:
@@ -301,13 +284,6 @@ class AgentTracer:
                         }
                     )
             
-            _append_jsonl(
-                agent_name=workflow_name,
-                inputs=inputs,
-                outputs={"success": outputs.get("success"), "sentiment": outputs.get("sentiment")},
-                duration_seconds=0.0,
-                ticker=outputs.get("ticker") or (inputs.get("ticker") if isinstance(inputs, dict) else None),
-            )
             logger.info(f"Logged graph run: {workflow_name}")
             
         except Exception as e:

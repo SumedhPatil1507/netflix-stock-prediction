@@ -158,9 +158,27 @@ class NarrativeEvaluator:
             Dictionary containing batch evaluation results
         """
         if not self.enable_evaluation:
+            # Lexical fallback for each item in the batch
+            individual_results = []
+            for item in narratives:
+                r = self._lexical_faithfulness(
+                    narrative=item.get("narrative", ""),
+                    retrieved_docs=item.get("retrieved_docs", []),
+                    query=item.get("query", "")
+                )
+                individual_results.append(r)
+            faith_scores = [r["scores"]["faithfulness"] for r in individual_results]
             return {
-                "error": "Evaluation disabled or RAGAS not available",
-                "timestamp": datetime.now().isoformat()
+                "aggregate_scores": {
+                    "faithfulness_mean": sum(faith_scores) / len(faith_scores) if faith_scores else 0.0,
+                    "faithfulness_min": min(faith_scores) if faith_scores else 0.0,
+                    "faithfulness_max": max(faith_scores) if faith_scores else 0.0,
+                },
+                "individual_scores": individual_results,
+                "metrics_used": ["faithfulness_lexical"],
+                "num_narratives": len(narratives),
+                "timestamp": datetime.now().isoformat(),
+                "fallback": True,
             }
         
         try:
@@ -173,7 +191,10 @@ class NarrativeEvaluator:
             for item in narratives:
                 questions.append(item.get("query", ""))
                 answers.append(item.get("narrative", ""))
-                contexts.append([doc["text"] for doc in item.get("retrieved_docs", [])])
+                contexts.append([
+                    doc.get("text") or doc.get("content") or doc.get("page_content", "")
+                    for doc in item.get("retrieved_docs", [])
+                ])
                 if item.get("ground_truth"):
                     ground_truths.append(item["ground_truth"])
             
@@ -248,7 +269,8 @@ class NarrativeEvaluator:
         # Calculate overlap with retrieved documents
         total_overlap = 0
         for doc in retrieved_docs:
-            doc_words = set(doc["text"].lower().split())
+            doc_text = doc.get("text") or doc.get("content") or doc.get("page_content", "")
+            doc_words = set(doc_text.lower().split())
             overlap = len(narrative_words & doc_words)
             total_overlap += overlap
         
