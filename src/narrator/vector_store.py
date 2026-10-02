@@ -4,6 +4,8 @@ Handles document storage, retrieval, and management for earnings transcripts and
 """
 from __future__ import annotations
 import os
+import math
+import hashlib
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -13,6 +15,48 @@ from chromadb.config import Settings
 from chromadb.utils import embedding_functions
 
 logger = logging.getLogger(__name__)
+
+
+class _HashEmbeddingFunction:
+    """
+    Zero-dependency fallback embedding function.
+
+    Produces a 128-dim L2-normalised vector via word-level hash bucketing.
+    Works without sentence-transformers, onnxruntime, or network access.
+    Implements the full ChromaDB EmbeddingFunction protocol (≥ 0.5).
+    """
+    DIM = 128
+
+    def __init__(self) -> None:
+        pass  # suppress DeprecationWarning from base Protocol
+
+    @staticmethod
+    def name() -> str:
+        return "hash-fallback"
+
+    def get_config(self) -> Dict[str, Any]:
+        return {"dim": self.DIM}
+
+    @staticmethod
+    def build_from_config(config: Dict[str, Any]) -> "_HashEmbeddingFunction":
+        return _HashEmbeddingFunction()
+
+    def _embed(self, texts: List[str]) -> List[List[float]]:
+        out = []
+        for text in texts:
+            vec = [0.0] * self.DIM
+            for word in text.lower().split():
+                h = int(hashlib.md5(word.encode()).hexdigest(), 16)
+                vec[h % self.DIM] += 1.0
+            norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+            out.append([v / norm for v in vec])
+        return out
+
+    def __call__(self, input: List[str]) -> List[List[float]]:  # noqa: A002
+        return self._embed(input)
+
+    def embed_query(self, input: List[str]) -> List[List[float]]:  # noqa: A002
+        return self._embed(input)
 
 
 class VectorStore:
@@ -39,15 +83,20 @@ class VectorStore:
         # Create persist directory if it doesn't exist
         os.makedirs(persist_directory, exist_ok=True)
         
-        # Initialize embedding function
+        # Initialize embedding function — try sentence-transformers first,
+        # then fall back to a pure-Python hash embedder so the pipeline
+        # works without onnxruntime or network access.
         try:
             self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
                 model_name=embedding_model
             )
+            logger.info(f"Using SentenceTransformer embeddings ({embedding_model})")
         except Exception as e:
-            logger.warning(f"Error initializing SentenceTransformerEmbeddingFunction: {e}")
-            # Fallback to default embedding function
-            self.embedding_function = embedding_functions.DefaultEmbeddingFunction()
+            logger.warning(
+                f"SentenceTransformerEmbeddingFunction unavailable ({e}); "
+                "falling back to hash-based embeddings."
+            )
+            self.embedding_function = _HashEmbeddingFunction()
         
         # Initialize ChromaDB client
         self.client = chromadb.PersistentClient(
@@ -101,23 +150,43 @@ class VectorStore:
     ) -> Dict[str, Any]:
         """
         Query the vector store for relevant documents.
-        
+
         Args:
             query_text: Query text
             n_results: Number of results to return
             where: Metadata filter conditions
             where_document: Document content filter conditions
-            
+
         Returns:
-            Dictionary containing query results
+            Dictionary containing query results (empty-safe)
         """
-        results = self.collection.query(
-            query_texts=[query_text],
-            n_results=n_results,
-            where=where,
-            where_document=where_document
-        )
-        
+        # ChromaDB raises if n_results > collection count — guard here
+        count = self.collection.count()
+        if count == 0:
+            logger.warning("Query on empty collection — returning empty result")
+            return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+        safe_n = min(n_results, count)
+
+        try:
+            results = self.collection.query(
+                query_texts=[query_text],
+                n_results=safe_n,
+                where=where,
+                where_document=where_document,
+            )
+        except Exception as e:
+            # If 'where' filter matched no docs ChromaDB can also raise; retry without filter
+            logger.warning(f"Query with where={where} failed ({e}); retrying without filter")
+            try:
+                results = self.collection.query(
+                    query_texts=[query_text],
+                    n_results=safe_n,
+                )
+            except Exception as e2:
+                logger.error(f"Query failed entirely: {e2}")
+                return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+
         logger.info(f"Query returned {len(results['ids'][0])} results")
         return results
     
@@ -132,18 +201,18 @@ class VectorStore:
         logger.info(f"Deleted {len(ids)} documents from vector store")
     
     def get_collection_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about the collection.
-        
-        Returns:
-            Dictionary with collection statistics
-        """
+        """Get statistics about the collection."""
         count = self.collection.count()
+        ef_name = (
+            self.embedding_model
+            if not isinstance(self.embedding_function, _HashEmbeddingFunction)
+            else "hash-fallback (128-dim)"
+        )
         return {
             "collection_name": self.collection_name,
             "document_count": count,
             "persist_directory": self.persist_directory,
-            "embedding_model": self.embedding_model
+            "embedding_model": ef_name,
         }
     
     def clear_collection(self) -> None:
@@ -160,19 +229,26 @@ class VectorStore:
     def get_by_ticker(self, ticker: str, n_results: int = 10) -> Dict[str, Any]:
         """
         Get documents filtered by ticker symbol.
-        
+
         Args:
             ticker: Stock ticker symbol
             n_results: Number of results to return
-            
+
         Returns:
-            Dictionary containing filtered results
+            Dictionary containing filtered results (empty-safe)
         """
-        # Get all documents for the ticker
-        results = self.collection.get(
-            where={"ticker": ticker},
-            limit=n_results
-        )
-        
+        if self.collection.count() == 0:
+            logger.warning("get_by_ticker on empty collection — returning empty result")
+            return {"ids": [], "documents": [], "metadatas": []}
+
+        try:
+            results = self.collection.get(
+                where={"ticker": ticker},
+                limit=n_results,
+            )
+        except Exception as e:
+            logger.warning(f"get_by_ticker failed ({e}); returning empty result")
+            return {"ids": [], "documents": [], "metadatas": []}
+
         logger.info(f"Retrieved {len(results['ids'])} documents for ticker {ticker}")
         return results

@@ -2,184 +2,256 @@
 
 [![Tests](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/test.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-app-red)](https://streamlit.io/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-live-red)](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An interactive Streamlit dashboard for exploring Netflix (NFLX) market data, next-day return estimates, historical backtests, sentiment, risk metrics, model explainability, drift, and **AI-powered market narratives**. The repository includes a trained model, sample data, and a feature cache, so the dashboard can start without first training a model.
+An end-to-end ML + agentic-AI stock analysis platform built on Streamlit. Predicts next-day NFLX returns, runs backtests, manages risk, explains model decisions, and — as of the latest release — generates **citation-backed market narratives** via a LangGraph RAG pipeline backed by ChromaDB.
 
-> **Disclaimer:** This project is for educational and research purposes only. It is not investment advice and does not guarantee future performance. Market data may be delayed or unavailable.
+> **Disclaimer:** Educational / research use only. Not investment advice.
 
-**[Open the deployed app](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)** · **[Results](RESULTS.md)** · **[Contributing](CONTRIBUTING.md)**
+**[▶ Live app](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)** · **[Results](RESULTS.md)** · **[Contributing](CONTRIBUTING.md)**
 
-## Dashboard and model
+---
 
-The dashboard is a **ten-tab** Streamlit app with interactive Plotly charts. It uses a stacking regressor (XGBoost, LightGBM, Random Forest, and Extra Trees with a Ridge meta-model) and engineered technical indicators. It includes market overview, next-day prediction, backtesting, paper-trading simulation, **sentiment analysis with VADER**, risk, drift monitoring, explainability, **AI Market Narrator**, and architecture views.
+## What's new — AI Market Narrator
 
-### Key Features
+The biggest addition is a **two-agent LangGraph pipeline** that produces plain-English, citation-backed explanations of every model prediction:
 
-- **Interactive Plotly Charts**: All visualizations are fully interactive with zoom, pan, and hover capabilities
-- **VADER Sentiment Analysis**: Real-time sentiment scoring of Netflix headlines via Yahoo Finance with fallback sample data
-- **AI Market Narrator**: Agentic RAG system that explains model predictions with citation-backed narratives
-- **Risk Management**: Comprehensive position sizing, stop-loss, and portfolio risk tools
-- **Model Explainability**: Feature importance analysis and correlation matrices
-- **Drift Monitoring**: Automated drift detection with PSI and KS tests
+| Component | What it does |
+|---|---|
+| `RetrieverAgent` | Semantic search over ChromaDB (earnings transcripts + financial news) |
+| `SynthesisAgent` | Reads prediction + conformal interval + retrieved docs → narrative |
+| `NarratorGraph` | LangGraph workflow: retrieve → synthesise (or error-handle) |
+| `_HashEmbeddingFunction` | Zero-dep fallback embedder — works without `sentence-transformers` |
+| `AgentTracer` | Langfuse trace + local JSONL fallback in `logs/agent_traces.jsonl` |
+| `NarrativeEvaluator` | RAGAS faithfulness when available; lexical-overlap fallback otherwise |
+| `eval_narrative.py` | Standalone evaluation script at project root |
 
-The repository also includes a separate FastAPI service (`api/main.py`), model training pipeline (`main.py`), tests, and GitHub Actions workflows. The Streamlit dashboard is launched independently from the API.
+The AI Narrative tab renders five interactive Plotly charts: a sentiment gauge, a conformal-interval scatter, a source-relevance bar, a faithfulness gauge (on demand), and an agent trace log viewer.
 
-## AI Market Narrator
+---
 
-The dashboard now includes an **AI Market Narrator** - an agentic RAG (Retrieval-Augmented Generation) system that explains model predictions with citation-backed narratives:
+## Ten-tab Streamlit dashboard
 
-### Features
+| Tab | Contents |
+|---|---|
+| 🕯 Market Overview | Live candlestick · MA20/50/200 · RSI · MACD · Bollinger Bands |
+| 🔮 Predict | Live data editor → next-day return + conformal interval |
+| 📈 Backtesting | Equity curve · Rolling Sharpe · Drawdown |
+| 📋 Paper Trade | Day-by-day simulation · cumulative PnL · pred vs actual scatter |
+| 🧠 Sentiment | VADER scoring · bar + pie charts · fallback sample data |
+| ⚠️ Risk | Kelly sizing · ATR stop-loss · VaR/CVaR · volatility surface |
+| 🔬 Drift Monitor | PSI + KS drift detection across all 51 features |
+| 🔍 Explainability | Per-model feature importance · target correlation |
+| 🤖 AI Narrative | RAG narrative · sentiment gauge · CI chart · source relevance · RAGAS eval |
+| 🏗 Architecture | Pipeline diagram · design decisions · limitations |
 
-- **LangGraph Pipeline**: Multi-agent workflow with retriever and synthesis agents
-- **ChromaDB Vector Store**: Semantic search over earnings call transcripts and financial news
-- **Citation System**: Automatic source attribution for all narrative claims
-- **Langfuse Observability**: Comprehensive logging and tracing of all agent runs
-- **RAGAS Evaluation**: Faithfulness scoring to ensure narratives are grounded in retrieved sources
+All charts are **fully interactive Plotly** (zoom, pan, hover, download).
 
-### How It Works
+---
 
-1. **Retriever Agent**: Searches ChromaDB for relevant earnings transcripts and financial news based on prediction context
-2. **Synthesis Agent**: Generates plain-English narratives explaining bullish/bearish stances using retrieved context
-3. **Citation System**: Extracts and formats citations from retrieved documents for transparency
-4. **Observability**: Every agent run is logged to Langfuse for monitoring and debugging
+## Model
 
-### Setup Requirements
+- **Target:** next-day return `%` (stationary; not price)
+- **Architecture:** `ManualStackingRegressor` — XGBoost + LightGBM + Random Forest + Extra Trees → Ridge meta-learner
+- **Validation:** walk-forward time-series CV (no future leakage)
+- **Uncertainty:** conformal prediction intervals (90% coverage guarantee)
+- **Features:** 51 technical indicators (RSI, MACD, Bollinger, ATR, Stochastic, Williams %R, CCI, …)
 
-The AI Narrator requires additional dependencies. Ensure you have:
-- OpenAI API key (set as `OPENAI_API_KEY` environment variable)
-- Optional: Langfuse credentials for observability (set as `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`)
+---
 
-The system automatically initializes with sample Netflix earnings transcripts and financial news on first run.
+## AI Market Narrator — deep dive
 
-## Sentiment Analysis
+### Pipeline
 
-The dashboard includes **VADER sentiment analysis** for Netflix headlines:
+```
+User clicks "Generate AI Narrative"
+        │
+        ▼
+NarratorGraph.run(ticker, prediction, conformal_interval, price)
+        │
+        ├─ [retrieve node]
+        │    RetrieverAgent → ChromaDB.query(semantic search, n=5)
+        │    Returns: list of {text, metadata, distance}
+        │
+        ├─ [synthesise node]
+        │    SynthesisAgent.generate_narrative(...)
+        │    → GPT-4o-mini if OPENAI_API_KEY set
+        │    → enriched fallback (cites retrieved doc titles) otherwise
+        │
+        └─ Result dict: narrative, citations, sentiment, sources_used
+                │
+                ├─ Streamlit renders 5 interactive Plotly charts
+                ├─ AgentTracer logs to Langfuse + logs/agent_traces.jsonl
+                └─ Optional: NarrativeEvaluator.evaluate_narrative()
+                             (RAGAS faithfulness or lexical-overlap fallback)
+```
 
-### Features
+### Embedding strategy
 
-- **Real-time News Fetching**: Automatically fetches recent Netflix headlines from Yahoo Finance
-- **VADER Scoring**: Uses VADER (Valence Aware Dictionary and sEntiment Reasoner) for sentiment analysis
-- **Fallback Sample Data**: When live news is unavailable, uses realistic sample Netflix headlines for demonstration
-- **Interactive Visualizations**: Sentiment scores displayed with interactive bar charts and pie charts
-- **Sentiment Distribution**: Shows positive, neutral, and negative sentiment breakdown
+`VectorStore` tries `sentence-transformers/all-MiniLM-L6-v2` first. If the package is absent it falls back to `_HashEmbeddingFunction` — a pure-Python 128-dim word-hash embedder that requires no downloads and no `onnxruntime`. Retrieval quality is lower than a transformer but the pipeline is fully functional.
 
-### How It Works
+### Observability
 
-1. **News Fetching**: Retrieves recent Netflix news via yfinance API
-2. **Sentiment Scoring**: Applies VADER sentiment analysis to each headline
-3. **Classification**: Categorizes headlines as Positive (>0.05), Negative (<-0.05), or Neutral
-4. **Visualization**: Displays sentiment trends and distribution with interactive Plotly charts
+Every agent run writes one JSONL line to `logs/agent_traces.jsonl`:
 
-### Requirements
+```json
+{
+  "timestamp": "2026-10-01T12:34:56",
+  "agent_name": "narrator_graph",
+  "ticker": "NFLX",
+  "inputs_summary": "{'ticker': 'NFLX', 'prediction': 0.005, ...}",
+  "outputs_summary": "{'success': True, 'sentiment': 'bullish', ...}",
+  "duration_seconds": 1.23,
+  "error": null
+}
+```
 
-- **vaderSentiment**: Required for sentiment analysis (installed via requirements.txt)
-- **yfinance**: Required for news fetching (already in requirements.txt)
-- **No API Key Needed**: Uses free Yahoo Finance API for news data
+Langfuse is optional: set `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` to enable cloud tracing.
 
-When live news is unavailable, the system gracefully falls back to sample data and displays an informative message.
+### RAGAS evaluation
 
-## Run the Streamlit app locally
+```bash
+python eval_narrative.py
+```
 
-Use Python 3.11 (the version selected by `.python-version`):
+Generates a narrative for NFLX, scores it with `NarrativeEvaluator`, prints a report, and saves to `outputs/evaluation_results.json`. Uses RAGAS faithfulness when the package is installed; falls back to lexical overlap otherwise.
+
+---
+
+## Quick start
 
 ```bash
 git clone https://github.com/SumedhPatil1507/netflix-stock-prediction.git
 cd netflix-stock-prediction
 
-python3.11 -m venv .venv
-source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m venv .venv
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+# macOS / Linux
+source .venv/bin/activate
 
+pip install -r requirements.txt
 streamlit run app/app.py
 ```
 
-Open the local URL printed by Streamlit, normally <http://localhost:8501>. The app loads `models/model.pkl` and uses the checked-in feature cache and CSV data as fallbacks. Live chart data is fetched from Yahoo Finance when available; an internet connection is needed for live quotes and sentiment analysis. No API key is required for the basic dashboard.
+Open <http://localhost:8501>. The app loads `models/model.pkl` and the bundled feature cache — no retraining needed.
 
-You can also launch it with `make app` after installing the dependencies. To run the separate API locally, install the development dependencies and use:
+### Optional integrations
+
+| Variable | Purpose |
+|---|---|
+| `OPENAI_API_KEY` | LLM-powered narratives (GPT-4o-mini); falls back to rule-based if absent |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | Cloud trace dashboard; JSONL fallback always active |
+
+Copy `.env.example` to `.env` and fill in values. Never commit `.env`.
+
+### AI Narrator extra deps (already in `requirements.txt`)
 
 ```bash
-python -m pip install -r requirements-dev.txt
-uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
+pip install langchain langchain-openai langgraph langfuse \
+            chromadb sentence-transformers ragas openai
 ```
 
-The API docs are then at <http://127.0.0.1:8000/docs>.
+The base dashboard works without these — the AI Narrative tab shows an install prompt when they are absent.
+
+---
 
 ## Deploy to Streamlit Community Cloud
 
-1. Push this repository to GitHub.
-2. In [Streamlit Community Cloud](https://share.streamlit.io/), create an app and select `SumedhPatil1507/netflix-stock-prediction`.
-3. Select branch `streamlit-streamlit-cloud-setup` and set **Main file path** to `app/app.py`.
-4. Use Python 3.11 (the repository includes `.python-version`) and deploy. Streamlit Cloud installs the root `requirements.txt` automatically.
-5. After subsequent commits are pushed to the selected branch, Streamlit Cloud redeploys the app.
+1. Push to the `streamlit-streamlit-cloud-setup` branch.
+2. In [Streamlit Community Cloud](https://share.streamlit.io/) select this repo, branch `streamlit-streamlit-cloud-setup`, main file `app/app.py`.
+3. Python 3.11 is auto-detected from `.python-version`.
+4. Add optional secrets (`OPENAI_API_KEY`, `LANGFUSE_*`) in **Settings → Secrets**.
 
-The trained model and data/cache files are tracked in the repository, so deployment does not require a separate training step. `scikit-learn` is pinned to the version used to serialize the checked-in model. Optional integrations may need credentials: keep secrets out of source control and configure them in the app's Streamlit Cloud **Settings → Secrets** only if you enable those integrations. `.env` is ignored by Git.
+The model, data, and feature cache are tracked in the repo — no training step needed at deploy time.
 
-## Update your changes on GitHub
+---
 
-After editing files locally, review the changes and push them to the selected branch:
+## Project structure
 
-```bash
-git status
-git diff
-git add README.md app requirements.txt .streamlit .github  # adjust this list to your changes
-git commit -m "Update Streamlit app and documentation"
-git push origin streamlit-streamlit-cloud-setup
+```
+app/app.py                     Streamlit dashboard (10 tabs, all Plotly)
+api/main.py                    FastAPI service (/predict, /risk/*, /execute)
+main.py                        Model training + evaluation pipeline
+eval_narrative.py              Standalone RAGAS eval script
+
+src/
+  data_loader.py               Multi-source OHLCV loader (CSV / yfinance / AV / Alpaca)
+  preprocessing.py             Cleaning, outlier removal
+  feature_engineering.py       51 technical indicators
+  modeling.py                  ManualStackingRegressor
+  uncertainty.py               Conformal prediction intervals
+  model_registry.py            Versioned model saves + registry.json
+  backtest.py                  Binary long/flat + Kelly strategy
+  risk_manager.py              ATR stop-loss, Kelly sizing, VaR/CVaR, circuit breaker
+  drift.py                     PSI + KS drift detection
+  regime_detection.py          HMM bull/bear/sideways regimes
+  sentiment.py                 VADER sentiment helpers
+  paper_trade.py               Day-by-day live simulation
+  explainability.py            SHAP + feature importance
+  agent_traces.py              Langfuse tracing + JSONL fallback
+  monitoring.py                Slack/email drift alerts
+
+  narrator/
+    __init__.py
+    vector_store.py            ChromaDB wrapper (_HashEmbeddingFunction fallback)
+    corpus.py                  Earnings transcripts + news loader / seeder
+    retriever_agent.py         Semantic retrieval agent
+    synthesis_agent.py         GPT / rule-based narrative generator
+    graph.py                   LangGraph workflow (retrieve → synthesise)
+    eval.py                    RAGAS faithfulness + lexical-overlap fallback
+
+models/model.pkl               Trained stacking regressor
+data/netflix.csv               Bundled OHLCV data
+data/chroma_db/                ChromaDB vector store (auto-created)
+data/transcripts/              Earnings call transcripts (auto-seeded)
+data/news/                     Financial news articles (auto-seeded)
+outputs/                       Plots, metrics, backtest curves, eval results
+logs/agent_traces.jsonl        Per-run agent trace log
+
+requirements.txt               Runtime deps (Streamlit Cloud)
+requirements-dev.txt           + test deps
+tests/                         Pytest suite
+.github/workflows/             CI (test.yml) + retrain (retrain.yml)
 ```
 
-To stage every changed and newly added file instead, use `git add -A` in place of the targeted `git add` command. Do not commit `.env`, credentials, or other secrets.
+---
 
-## Install and run tests
+## Run tests
 
 ```bash
-python -m pip install -r requirements-dev.txt
+pip install -r requirements-dev.txt
 pytest -q
 ```
 
-The GitHub Actions test workflow runs on pushes and pull requests targeting `streamlit-streamlit-cloud-setup`.
+---
 
-## Optional training and configuration
-
-The basic dashboard uses the model already in `models/model.pkl`; retraining is not needed just to launch it. To retrain from the included CSV, install `requirements-dev.txt` and run:
+## Retrain
 
 ```bash
 python main.py --source csv --ticker NFLX
 ```
 
-Other data providers and alerting features can require API credentials. See `.env.example` for the supported variable names. Never commit real credentials. Training writes updated artifacts under `models/` and `outputs/`.
+Writes updated artefacts to `models/` and `outputs/`. The weekly GitHub Actions workflow (`retrain.yml`) runs this automatically.
 
-## Project structure
+---
 
-```text
-app/app.py                 Streamlit dashboard (Community Cloud entrypoint)
-api/main.py                FastAPI service
-main.py                    Training and evaluation pipeline
-src/                       Data, feature, modeling, risk, and monitoring modules
-src/narrator/              AI Market Narrator (RAG system)
-  ├── vector_store.py      ChromaDB vector store management
-  ├── corpus.py            Earnings transcripts and news corpus
-  ├── retriever_agent.py   Document retrieval agent
-  ├── synthesis_agent.py   Narrative generation agent
-  ├── graph.py             LangGraph workflow orchestration
-  └── eval.py              RAGAS-based evaluation
-src/agent_traces.py        Langfuse observability and tracing
-models/model.pkl           Trained model used by the dashboard
-data/netflix.csv           Bundled sample market data
-data/chroma_db/            ChromaDB vector store (auto-generated)
-data/transcripts/          Earnings call transcripts (auto-generated)
-data/news/                 Financial news articles (auto-generated)
-outputs/features_cache.parquet  Cached engineered features
-requirements.txt           Runtime dependencies for Streamlit
-requirements-dev.txt       Runtime plus test and development dependencies
-tests/                     Pytest suite
-.github/workflows/         CI and scheduled retraining workflows
-```
+## Technology stack
 
-## Main technologies
+| Layer | Libraries |
+|---|---|
+| Dashboard | Streamlit · Plotly |
+| ML | scikit-learn · XGBoost · LightGBM · pandas · numpy · scipy |
+| Data | yfinance · Alpha Vantage · Alpaca |
+| AI Narrator | LangChain · LangGraph · ChromaDB · OpenAI · sentence-transformers |
+| Observability | Langfuse · JSONL |
+| Evaluation | RAGAS · datasets |
+| API | FastAPI · uvicorn |
+| Testing | pytest |
+| CI/CD | GitHub Actions |
 
-Python 3.11 · Streamlit · Plotly · pandas · scikit-learn · XGBoost · LightGBM · yfinance · FastAPI · pytest · vaderSentiment · LangChain · LangGraph · ChromaDB · Langfuse · RAGAS
+---
 
 ## License
 
