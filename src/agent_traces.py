@@ -4,10 +4,12 @@ Logs every agent run for monitoring and debugging.
 """
 from __future__ import annotations
 import os
+import json
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from contextlib import contextmanager
+from pathlib import Path
 
 try:
     from langfuse import Langfuse
@@ -18,6 +20,35 @@ except ImportError:
     logging.warning("Langfuse not installed. Observability features will be disabled.")
 
 logger = logging.getLogger(__name__)
+
+# JSONL fallback log path (relative to project root, resolved at import time)
+_JSONL_LOG_PATH = Path(__file__).parent.parent / "logs" / "agent_traces.jsonl"
+
+
+def _append_jsonl(
+    agent_name: str,
+    inputs: Any,
+    outputs: Any,
+    duration_seconds: float,
+    ticker: Optional[str] = None,
+    error: Optional[str] = None
+) -> None:
+    """Append one JSONL entry to the fallback trace log. Never raises."""
+    try:
+        _JSONL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "agent_name": agent_name,
+            "ticker": ticker,
+            "inputs_summary": str(inputs)[:200],
+            "outputs_summary": str(outputs)[:200],
+            "duration_seconds": round(duration_seconds, 4),
+            "error": error,
+        }
+        with _JSONL_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except Exception as exc:
+        logger.warning(f"JSONL trace write failed: {exc}")
 
 
 class AgentTracer:
@@ -78,13 +109,24 @@ class AgentTracer:
         Yields:
             trace object for updating with results
         """
-        if not self.enable_tracing:
-            yield None
-            return
-        
-        trace = None
         start_time = datetime.now()
-        
+
+        if not self.enable_tracing:
+            try:
+                yield None
+            finally:
+                duration = (datetime.now() - start_time).total_seconds()
+                _append_jsonl(
+                    agent_name=agent_name,
+                    inputs=inputs,
+                    outputs=metadata,
+                    duration_seconds=duration,
+                    ticker=inputs.get("ticker") if isinstance(inputs, dict) else None,
+                )
+            return
+
+        trace = None
+
         try:
             # Create a new trace
             trace = self.client.trace(
@@ -92,22 +134,28 @@ class AgentTracer:
                 input=inputs,
                 metadata=metadata or {}
             )
-            
+
             logger.info(f"Started trace for agent: {agent_name}")
             yield trace
-            
+
         except Exception as e:
             logger.error(f"Error creating trace: {e}")
             yield None
         finally:
+            duration = (datetime.now() - start_time).total_seconds()
             if trace:
-                duration = (datetime.now() - start_time).total_seconds()
                 try:
-                    # End the trace
                     trace.end()
                     logger.info(f"Ended trace for agent: {agent_name} (duration: {duration:.2f}s)")
                 except Exception as e:
                     logger.error(f"Error ending trace: {e}")
+            _append_jsonl(
+                agent_name=agent_name,
+                inputs=inputs,
+                outputs=metadata,
+                duration_seconds=duration,
+                ticker=inputs.get("ticker") if isinstance(inputs, dict) else None,
+            )
     
     def log_retriever_run(
         self,
@@ -125,9 +173,6 @@ class AgentTracer:
             results: Retrieval results
             metadata: Additional metadata
         """
-        if not self.enable_tracing:
-            return
-        
         try:
             with self.trace_agent_run(
                 agent_name="retriever_agent",
@@ -155,6 +200,13 @@ class AgentTracer:
                             }
                         )
             
+            _append_jsonl(
+                agent_name="retriever_agent",
+                inputs={"query": query, "ticker": ticker},
+                outputs={"num_documents": len(results.get("documents", []))},
+                duration_seconds=0.0,
+                ticker=ticker,
+            )
             logger.info(f"Logged retriever run for {ticker}")
             
         except Exception as e:
@@ -178,9 +230,6 @@ class AgentTracer:
             citations: Citations used in narrative
             metadata: Additional metadata
         """
-        if not self.enable_tracing:
-            return
-        
         try:
             with self.trace_agent_run(
                 agent_name="synthesis_agent",
@@ -207,6 +256,13 @@ class AgentTracer:
                             input=citation
                         )
             
+            _append_jsonl(
+                agent_name="synthesis_agent",
+                inputs={"prediction": prediction, "ticker": ticker},
+                outputs={"narrative_length": len(narrative), "num_citations": len(citations)},
+                duration_seconds=0.0,
+                ticker=ticker,
+            )
             logger.info(f"Logged synthesis run for {ticker}")
             
         except Exception as e:
@@ -228,9 +284,6 @@ class AgentTracer:
             outputs: Workflow outputs
             metadata: Additional metadata
         """
-        if not self.enable_tracing:
-            return
-        
         try:
             with self.trace_agent_run(
                 agent_name=workflow_name,
@@ -248,6 +301,13 @@ class AgentTracer:
                         }
                     )
             
+            _append_jsonl(
+                agent_name=workflow_name,
+                inputs=inputs,
+                outputs={"success": outputs.get("success"), "sentiment": outputs.get("sentiment")},
+                duration_seconds=0.0,
+                ticker=outputs.get("ticker") or (inputs.get("ticker") if isinstance(inputs, dict) else None),
+            )
             logger.info(f"Logged graph run: {workflow_name}")
             
         except Exception as e:

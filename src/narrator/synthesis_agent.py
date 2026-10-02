@@ -79,7 +79,8 @@ class SynthesisAgent:
         if not LANGCHAIN_AVAILABLE or self.llm is None:
             logger.info("Using fallback narrative (LangChain not available)")
             return self._generate_fallback_narrative(
-                prediction, conformal_interval, ticker, current_price, sentiment, strength
+                prediction, conformal_interval, ticker, current_price, sentiment, strength,
+                retrieved_docs=retrieved_docs
             )
         
         # Format retrieved documents for context
@@ -152,7 +153,8 @@ Please provide a clear, well-structured narrative that explains why the model is
             logger.error(f"Error generating narrative: {e}")
             # Return fallback narrative
             return self._generate_fallback_narrative(
-                prediction, conformal_interval, ticker, current_price, sentiment, strength
+                prediction, conformal_interval, ticker, current_price, sentiment, strength,
+                retrieved_docs=retrieved_docs
             )
     
     def _format_documents_for_context(self, docs: List[Dict[str, Any]]) -> str:
@@ -210,18 +212,31 @@ Please provide a clear, well-structured narrative that explains why the model is
         ticker: str,
         current_price: float,
         sentiment: str,
-        strength: str
+        strength: str,
+        retrieved_docs: List[Dict[str, Any]] = []
     ) -> Dict[str, Any]:
         """Generate a fallback narrative if LLM fails."""
+        # Build Key Drivers section from retrieved docs
+        if retrieved_docs:
+            drivers_section = "\nKey Drivers from Retrieved Sources:\n"
+            for doc in retrieved_docs:
+                meta = doc.get("metadata", {})
+                title = meta.get("title", "Unnamed Source")
+                date = meta.get("date", "Unknown Date")
+                snippet = doc.get("text", "")[:120].replace("\n", " ")
+                drivers_section += f"- {snippet}... [Source: {title}, {date}]\n"
+        else:
+            drivers_section = (
+                f"\nKey Drivers:\n"
+                f"- Current price: ${current_price:.2f}\n"
+                f"- Model prediction based on technical indicators and historical patterns\n"
+                f"- Prediction confidence interval: {conformal_interval[1] - conformal_interval[0]:.4f}\n"
+            )
+
         narrative = f"""Executive Summary:
-The model predicts a {strength} {sentiment} outlook for {ticker} with a predicted next-day return of {prediction*100:.2f}%. 
+The model predicts a {strength} {sentiment} outlook for {ticker} with a predicted next-day return of {prediction*100:.2f}%.
 The conformal prediction interval suggests the return will likely fall between {conformal_interval[0]*100:.2f}% and {conformal_interval[1]*100:.2f}%.
-
-Key Drivers:
-- Current price: ${current_price:.2f}
-- Model prediction based on technical indicators and historical patterns
-- Prediction confidence interval: {conformal_interval[1] - conformal_interval[0]:.4f}
-
+{drivers_section}
 Risk Factors:
 - Market volatility and unexpected news events
 - Model limitations and potential overfitting
@@ -238,7 +253,7 @@ The model indicates a {strength} {sentiment} sentiment for {ticker}, but as with
             "strength": strength,
             "narrative": narrative,
             "citations": [],
-            "sources_used": 0,
+            "sources_used": len(retrieved_docs),
             "timestamp": datetime.now().isoformat(),
             "fallback": True
         }

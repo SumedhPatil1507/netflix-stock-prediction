@@ -3,6 +3,7 @@ import joblib
 import pandas as pd
 import numpy as np
 import os, sys, json
+from pathlib import Path
 
 import plotly.graph_objects as go
 import plotly.express as px
@@ -988,42 +989,138 @@ with tab_narrative:
                         )
                         
                         if result["success"]:
-                            # Display the narrative
+                            narrative   = result["narrative"] or ""
+                            prediction  = result["prediction"]          # decimal
+                            ci_lower, ci_upper = result["conformal_interval"]
+                            retrieved_docs = result.get("retrieved_documents") or []
+                            sources_used = result.get("sources_used", len(retrieved_docs))
+
+                            # ── a. Sentiment Gauge ─────────────────────────────
+                            st.markdown("### Sentiment & Confidence")
+                            col_g1, col_g2 = st.columns(2)
+
+                            with col_g1:
+                                sentiment_value = max(-1.0, min(1.0, prediction * 100))
+                                fig_gauge = go.Figure(go.Indicator(
+                                    mode="gauge+number",
+                                    value=sentiment_value,
+                                    title={"text": "Sentiment Score"},
+                                    gauge={
+                                        "axis": {"range": [-1, 1]},
+                                        "bar": {"color": "darkblue"},
+                                        "steps": [
+                                            {"range": [-1, 0], "color": "rgba(255,80,80,0.3)"},
+                                            {"range": [0, 1],  "color": "rgba(80,200,80,0.3)"}
+                                        ],
+                                        "threshold": {
+                                            "line": {"color": "black", "width": 3},
+                                            "thickness": 0.75,
+                                            "value": sentiment_value
+                                        }
+                                    }
+                                ))
+                                fig_gauge.update_layout(height=300, margin=dict(t=40, b=10, l=10, r=10))
+                                st.plotly_chart(fig_gauge, use_container_width=True)
+
+                            # ── b. Confidence Interval chart ───────────────────
+                            with col_g2:
+                                pred_pct   = prediction * 100
+                                lower_pct  = ci_lower * 100
+                                upper_pct  = ci_upper * 100
+                                fig_ci = go.Figure(go.Scatter(
+                                    x=[pred_pct],
+                                    y=[0],
+                                    mode="markers",
+                                    marker=dict(size=14, color="royalblue"),
+                                    error_x=dict(
+                                        type="data",
+                                        symmetric=False,
+                                        minus=abs(pred_pct - lower_pct),
+                                        plus=abs(upper_pct - pred_pct),
+                                        visible=True,
+                                        color="royalblue",
+                                        thickness=3,
+                                        width=8
+                                    ),
+                                    name="Prediction ± CI"
+                                ))
+                                fig_ci.update_layout(
+                                    title="Conformal Prediction Interval",
+                                    xaxis_title="Predicted Return (%)",
+                                    yaxis=dict(showticklabels=False, zeroline=False),
+                                    height=300,
+                                    margin=dict(t=40, b=40, l=10, r=10)
+                                )
+                                st.plotly_chart(fig_ci, use_container_width=True)
+
+                            # ── c. Source Relevance Bar chart ──────────────────
+                            if retrieved_docs:
+                                st.markdown("### Source Relevance")
+                                relevances = [
+                                    1 - doc["distance"] if "distance" in doc and doc["distance"] is not None
+                                    else 0.8
+                                    for doc in retrieved_docs
+                                ]
+                                titles = [
+                                    (doc.get("metadata", {}).get("title", f"Doc {i+1}") or f"Doc {i+1}")[:50]
+                                    for i, doc in enumerate(retrieved_docs)
+                                ]
+                                fig_bar = go.Figure(go.Bar(
+                                    x=relevances,
+                                    y=titles,
+                                    orientation="h",
+                                    marker=dict(
+                                        color=relevances,
+                                        colorscale="Greens",
+                                        showscale=True,
+                                        cmin=0,
+                                        cmax=1
+                                    )
+                                ))
+                                fig_bar.update_layout(
+                                    title="Retrieved Document Relevance Scores",
+                                    xaxis_title="Relevance Score (1 - distance)",
+                                    yaxis_title="Document",
+                                    height=max(250, 50 * len(retrieved_docs)),
+                                    margin=dict(t=40, b=40, l=10, r=10)
+                                )
+                                st.plotly_chart(fig_bar, use_container_width=True)
+
+                            # ── d. Narrative text ──────────────────────────────
                             st.markdown("### Generated Market Narrative")
-                            st.markdown(result["narrative"])
-                            
-                            # Display metadata
+                            st.markdown(narrative)
+
+                            # ── Metadata row ───────────────────────────────────
                             st.markdown("---")
-                            st.markdown("#### Narrative Metadata")
                             m1, m2, m3, m4 = st.columns(4)
-                            m1.metric("Sentiment", result["sentiment"].title())
+                            m1.metric("Sentiment", result["sentiment"].title() if result.get("sentiment") else "N/A")
                             m2.metric("Prediction", f"{input_prediction:+.2f}%")
-                            m3.metric("Sources Used", result["sources_used"])
-                            m4.metric("Query", result["query"][:30] + "..." if len(result["query"]) > 30 else result["query"])
-                            
-                            # Display citations
-                            if result["citations"]:
+                            m3.metric("Sources Used", sources_used)
+                            query_str = result.get("query") or ""
+                            m4.metric("Query", query_str[:30] + "..." if len(query_str) > 30 else query_str)
+
+                            # ── Citations ──────────────────────────────────────
+                            if result.get("citations"):
                                 st.markdown("#### Source Citations")
                                 for i, citation in enumerate(result["citations"], 1):
                                     with st.expander(f"Citation {i}: {citation['title']}"):
                                         st.markdown(f"**Source:** {citation['source']}")
                                         st.markdown(f"**Date:** {citation['date']}")
-                                        if citation.get('url'):
+                                        if citation.get("url"):
                                             st.markdown(f"**URL:** {citation['url']}")
-                            
-                            # Display retrieved documents
-                            if result["retrieved_documents"]:
+
+                            # ── Retrieved Documents ────────────────────────────
+                            if retrieved_docs:
                                 st.markdown("#### Retrieved Documents")
-                                for i, doc in enumerate(result["retrieved_documents"], 1):
+                                for i, doc in enumerate(retrieved_docs, 1):
                                     with st.expander(f"Document {i}: {doc['metadata'].get('title', 'Unknown')}"):
                                         st.markdown(f"**Source:** {doc['metadata'].get('source', 'Unknown')}")
                                         st.markdown(f"**Date:** {doc['metadata'].get('date', 'Unknown')}")
                                         st.markdown(f"**Content:** {doc['text']}")
-                                        if doc.get('distance'):
-                                            relevance = 1 - doc['distance']
-                                            st.metric("Relevance Score", f"{relevance:.3f}")
-                            
-                            # Log the run
+                                        if doc.get("distance") is not None:
+                                            st.metric("Relevance Score", f"{1 - doc['distance']:.3f}")
+
+                            # ── Log the run ────────────────────────────────────
                             if tracer:
                                 tracer.log_graph_run(
                                     workflow_name="narrator_graph",
@@ -1034,7 +1131,67 @@ with tab_narrative:
                                     },
                                     outputs=result
                                 )
-                        
+
+                            # ── e. Faithfulness Evaluation button ──────────────
+                            st.markdown("---")
+                            if st.button("Run Faithfulness Evaluation"):
+                                with st.spinner("Running faithfulness evaluation..."):
+                                    try:
+                                        from src.narrator.eval import NarrativeEvaluator
+                                        evaluator = NarrativeEvaluator()
+                                        query_for_eval = result.get("query") or f"{ticker} stock analysis"
+                                        eval_result = evaluator.evaluate_narrative(
+                                            narrative, retrieved_docs, query_for_eval
+                                        )
+                                        faith_score = eval_result.get("scores", {}).get("faithfulness", 0.0)
+                                        if isinstance(faith_score, str):
+                                            faith_score = 0.0
+                                        st.metric("Faithfulness Score", f"{faith_score:.3f}")
+                                        fig_faith = go.Figure(go.Indicator(
+                                            mode="gauge+number",
+                                            value=float(faith_score),
+                                            title={"text": "Faithfulness"},
+                                            gauge={
+                                                "axis": {"range": [0, 1]},
+                                                "bar": {"color": "steelblue"},
+                                                "steps": [
+                                                    {"range": [0, 0.4], "color": "rgba(255,80,80,0.3)"},
+                                                    {"range": [0.4, 0.7], "color": "rgba(255,200,80,0.3)"},
+                                                    {"range": [0.7, 1.0], "color": "rgba(80,200,80,0.3)"}
+                                                ]
+                                            }
+                                        ))
+                                        fig_faith.update_layout(height=280, margin=dict(t=40, b=10, l=10, r=10))
+                                        st.plotly_chart(fig_faith, use_container_width=True)
+                                        is_fallback = eval_result.get("fallback", False)
+                                        method = eval_result.get("scores", {}).get("method", "ragas")
+                                        st.caption(f"Evaluation method: {'lexical overlap (fallback)' if is_fallback else method}")
+                                    except Exception as eval_err:
+                                        st.error(f"Evaluation error: {eval_err}")
+
+                            # ── f. Agent Trace Log Viewer ──────────────────────
+                            JSONL_LOG = Path(REPO_ROOT) / "logs" / "agent_traces.jsonl"
+                            with st.expander("View Agent Trace Log"):
+                                if JSONL_LOG.exists():
+                                    try:
+                                        lines = JSONL_LOG.read_text(encoding="utf-8").splitlines()
+                                        last_10 = lines[-10:]
+                                        records = []
+                                        for ln in last_10:
+                                            try:
+                                                records.append(json.loads(ln))
+                                            except Exception:
+                                                pass
+                                        if records:
+                                            import pandas as _pd
+                                            st.dataframe(_pd.DataFrame(records), use_container_width=True)
+                                        else:
+                                            st.info("Trace log is empty.")
+                                    except Exception as log_err:
+                                        st.error(f"Could not read trace log: {log_err}")
+                                else:
+                                    st.info("No trace log yet. Run a narrative generation first.")
+
                         else:
                             st.error(f"Error generating narrative: {result.get('error', 'Unknown error')}")
                     

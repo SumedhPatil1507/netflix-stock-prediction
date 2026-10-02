@@ -13,13 +13,12 @@ import pandas as pd
 
 try:
     from ragas import evaluate
-    from ragas.metrics import faithfulness, answer_relevancy, context_precision
-    from ragas.dataset import Dataset
-    from langchain_core.documents import Document
+    from ragas.metrics import faithfulness, answer_relevancy
+    from datasets import Dataset
     RAGAS_AVAILABLE = True
-except ImportError:
+except Exception:
     RAGAS_AVAILABLE = False
-    logging.warning("RAGAS not installed. Evaluation features will be disabled.")
+    logging.warning("RAGAS not installed or import failed. Evaluation will use lexical fallback.")
 
 logger = logging.getLogger(__name__)
 
@@ -50,15 +49,30 @@ class NarrativeEvaluator:
                     self.metric_objects.append(faithfulness)
                 elif metric_name == "answer_relevancy":
                     self.metric_objects.append(answer_relevancy)
-                elif metric_name == "context_precision":
-                    self.metric_objects.append(context_precision)
             
             logger.info(f"Narrative evaluator initialized with metrics: {self.metrics}")
         else:
             self.metrics = []
             self.metric_objects = []
-            logger.info("Narrative evaluation disabled")
+            logger.info("Narrative evaluation disabled (RAGAS unavailable — will use lexical fallback)")
     
+    def _lexical_faithfulness(
+        self,
+        narrative: str,
+        retrieved_docs: List[Dict[str, Any]],
+        query: str
+    ) -> Dict[str, Any]:
+        """Word-overlap faithfulness fallback when RAGAS is unavailable."""
+        score = self.calculate_faithfulness_score(narrative, retrieved_docs)
+        return {
+            "scores": {"faithfulness": score, "method": "lexical_overlap"},
+            "metrics_used": ["faithfulness_lexical"],
+            "narrative_length": len(narrative),
+            "num_contexts": len(retrieved_docs),
+            "timestamp": datetime.now().isoformat(),
+            "fallback": True
+        }
+
     def evaluate_narrative(
         self,
         narrative: str,
@@ -79,10 +93,7 @@ class NarrativeEvaluator:
             Dictionary containing evaluation scores
         """
         if not self.enable_evaluation:
-            return {
-                "error": "Evaluation disabled or RAGAS not available",
-                "timestamp": datetime.now().isoformat()
-            }
+            return self._lexical_faithfulness(narrative, retrieved_docs, query)
         
         try:
             # Prepare data for RAGAS
@@ -126,11 +137,8 @@ class NarrativeEvaluator:
             }
             
         except Exception as e:
-            logger.error(f"Error evaluating narrative: {e}")
-            return {
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
+            logger.warning(f"RAGAS eval failed, using lexical fallback: {e}")
+            return self._lexical_faithfulness(narrative, retrieved_docs, query)
     
     def evaluate_batch(
         self,

@@ -89,11 +89,10 @@ class NarratorGraph:
         
         # Add edges
         workflow.set_entry_point("retrieve")
-        workflow.add_edge("retrieve", "synthesize")
         workflow.add_edge("synthesize", END)
         workflow.add_edge("handle_error", END)
         
-        # Add conditional edges for error handling
+        # Conditional routing: if retrieval errored → handle_error, else → synthesize
         workflow.add_conditional_edges(
             "retrieve",
             self._check_retrieval_error,
@@ -268,7 +267,8 @@ The model indicates a {strength} {sentiment} sentiment for {ticker}, but please 
                 "retrieved_documents": result.get("retrieved_documents"),
                 "query": result.get("query"),
                 "timestamp": result.get("timestamp"),
-                "error": result.get("error")
+                "error": result.get("error"),
+                "sources_used": len(result.get("retrieved_documents") or [])
             }
             
         except Exception as e:
@@ -339,7 +339,8 @@ The model indicates a {strength} {sentiment} sentiment for {ticker}, but please 
                 "query": query,
                 "timestamp": datetime.now().isoformat(),
                 "error": None,
-                "simplified_mode": True
+                "simplified_mode": True,
+                "sources_used": len(retrieved_docs)
             }
             
         except Exception as e:
