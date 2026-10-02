@@ -13,3 +13,11 @@ logs/
 .mypy_cache/
 dist/
 build/
+
+# AI Narrator auto-generated data
+data/chroma_db/
+data/news/
+data/transcripts/
+
+# Kiro / workflow agent artefacts
+.agents/

@@ -3,6 +3,7 @@ import joblib
 import pandas as pd
 import numpy as np
 import os, sys, json
+from pathlib import Path
 
 import plotly.graph_objects as go
 import plotly.express as px
@@ -128,9 +129,10 @@ tabs = st.tabs([
     "⚠️ Risk",
     "🔬 Drift Monitor",
     "🔍 Explainability",
+    "🤖 AI Narrative",
     "🏗 Architecture",
 ])
-tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk, tab_drift, tab_shap, tab_arch = tabs
+tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk, tab_drift, tab_shap, tab_narrative, tab_arch = tabs
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — MARKET OVERVIEW (Candlestick + indicators)
@@ -486,6 +488,23 @@ with tab_sent:
             from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
             sia   = SentimentIntensityAnalyzer()
             news  = yf.Ticker("NFLX").news or []
+            
+            # If no news from yfinance, use sample data
+            if not news:
+                st.info("Live news unavailable from Yahoo Finance. Using sample data for demonstration.")
+                import time
+                now = time.time()
+                sample_news = [
+                    {"title": "Netflix stock surges on strong subscriber growth", "providerPublishTime": int(now - 86400)},
+                    {"title": "Netflix faces increasing competition in streaming market", "providerPublishTime": int(now - 172800)},
+                    {"title": "Netflix reports better than expected earnings", "providerPublishTime": int(now - 259200)},
+                    {"title": "Netflix content strategy drives international expansion", "providerPublishTime": int(now - 345600)},
+                    {"title": "Wall Street remains bullish on Netflix despite valuation concerns", "providerPublishTime": int(now - 432000)},
+                    {"title": "Netflix advertising business shows promise", "providerPublishTime": int(now - 518400)},
+                    {"title": "Netflix original content continues to drive engagement", "providerPublishTime": int(now - 604800)},
+                ]
+                news = sample_news
+            
             rows  = []
             for item in news:
                 ts    = pd.Timestamp(item.get("providerPublishTime", 0), unit="s")
@@ -495,13 +514,16 @@ with tab_sent:
                               "sentiment": "Positive" if score > 0.05
                               else ("Negative" if score < -0.05 else "Neutral")})
             return pd.DataFrame(rows)
+        except ImportError:
+            # Handle missing vaderSentiment gracefully
+            return pd.DataFrame(columns=["date","title","score","sentiment"])
         except Exception as e:
             return pd.DataFrame(columns=["date","title","score","sentiment"])
 
     df_sent = _get_sentiment()
 
     if df_sent.empty:
-        st.warning("Sentiment data unavailable. Install vaderSentiment: `pip install vaderSentiment`")
+        st.warning("Sentiment data unavailable. vaderSentiment may not be installed. Install with: `pip install vaderSentiment`")
     else:
         avg = df_sent["score"].mean()
         pos = (df_sent["sentiment"] == "Positive").sum()
@@ -848,7 +870,430 @@ with tab_shap:
         )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 9 — ARCHITECTURE
+# TAB 9 — AI NARRATIVE
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_narrative:
+    st.subheader("AI Market Narrator")
+    st.caption("Agentic RAG system that explains model predictions with citation-backed narratives from earnings calls and financial news.")
+    
+    # Check if narrator dependencies are available
+    narrator_available = False
+    try:
+        from src.narrator import NarratorGraph, VectorStore, CorpusManager
+        from src.agent_traces import get_tracer
+        narrator_available = True
+    except ImportError as e:
+        st.warning(f"""
+        **AI Narrator dependencies not fully installed.**
+        
+        To enable the AI Narrator features, install the additional dependencies:
+        ```bash
+        pip install langchain langchain-openai langgraph langfuse chromadb sentence-transformers ragas openai
+        ```
+        
+        Error: {str(e)}
+        
+        The rest of the dashboard will continue to work normally.
+        """)
+    
+    if narrator_available:
+        # Initialize narrator components
+        @st.cache_resource(show_spinner="Loading AI Narrator components...")
+        def load_narrator_components():
+            try:
+                vector_store = VectorStore()
+                corpus_manager = CorpusManager()
+                narrator_graph = NarratorGraph(
+                    vector_store=vector_store,
+                    corpus_manager=corpus_manager
+                )
+                tracer = get_tracer()
+                
+                # Initialize vector store with sample data if empty
+                stats = vector_store.get_collection_stats()
+                if stats["document_count"] == 0:
+                    narrator_graph.initialize_vector_store("NFLX")
+                
+                return narrator_graph, vector_store, tracer
+            except Exception as e:
+                st.error(f"Error loading narrator components: {e}")
+                return None, None, None
+        
+        narrator_graph, vector_store, tracer = load_narrator_components()
+        
+        if narrator_graph is None:
+            st.warning("AI Narrator components could not be loaded. Please check the error above.")
+        else:
+            # Show vector store stats
+            stats = vector_store.get_collection_stats()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Documents in Vector Store", stats["document_count"])
+            c2.metric("Collection Name", stats["collection_name"])
+            c3.metric("Embedding Model", stats["embedding_model"])
+            
+            st.markdown("---")
+            
+            # Generate narrative section
+            st.markdown("#### Generate Market Narrative")
+            
+            # Get current price from live data
+            current_price = df_source["Close"].iloc[-1] if not df_source.empty else 650.0
+            
+            # Input prediction parameters
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                input_prediction = st.number_input(
+                    "Predicted Return (%)",
+                    value=0.5,
+                    min_value=-10.0,
+                    max_value=10.0,
+                    step=0.1,
+                    help="Model's predicted next-day return"
+                )
+            with col2:
+                input_ci_lower = st.number_input(
+                    "CI Lower Bound (%)",
+                    value=-0.5,
+                    min_value=-10.0,
+                    max_value=10.0,
+                    step=0.1,
+                    help="Lower bound of conformal prediction interval"
+                )
+            with col3:
+                input_ci_upper = st.number_input(
+                    "CI Upper Bound (%)",
+                    value=1.5,
+                    min_value=-10.0,
+                    max_value=10.0,
+                    step=0.1,
+                    help="Upper bound of conformal prediction interval"
+                )
+            
+            current_price = st.number_input(
+                "Current Price ($)",
+                value=current_price,
+                min_value=1.0,
+                max_value=10000.0,
+                step=1.0
+            )
+            
+            if st.button("Generate AI Narrative", type="primary"):
+                with st.spinner("Generating narrative with RAG pipeline..."):
+                    try:
+                        # Run the narrator workflow
+                        result = narrator_graph.run(
+                            ticker=ticker,
+                            prediction=input_prediction / 100,  # Convert to decimal
+                            conformal_interval=(input_ci_lower / 100, input_ci_upper / 100),
+                            current_price=current_price
+                        )
+                        
+                        if result["success"]:
+                            narrative   = result["narrative"] or ""
+                            prediction  = result["prediction"]          # decimal
+                            ci_lower, ci_upper = result["conformal_interval"]
+                            retrieved_docs = result.get("retrieved_documents") or []
+                            sources_used = result.get("sources_used", len(retrieved_docs))
+
+                            # ── a. Sentiment Gauge ─────────────────────────────
+                            st.markdown("### Sentiment & Confidence")
+                            col_g1, col_g2 = st.columns(2)
+
+                            with col_g1:
+                                sentiment_value = max(-1.0, min(1.0, prediction * 100))
+                                fig_gauge = go.Figure(go.Indicator(
+                                    mode="gauge+number",
+                                    value=sentiment_value,
+                                    title={"text": "Sentiment Score"},
+                                    gauge={
+                                        "axis": {"range": [-1, 1]},
+                                        "bar": {"color": "darkblue"},
+                                        "steps": [
+                                            {"range": [-1, 0], "color": "rgba(255,80,80,0.3)"},
+                                            {"range": [0, 1],  "color": "rgba(80,200,80,0.3)"}
+                                        ],
+                                        "threshold": {
+                                            "line": {"color": "black", "width": 3},
+                                            "thickness": 0.75,
+                                            "value": sentiment_value
+                                        }
+                                    }
+                                ))
+                                fig_gauge.update_layout(height=300, margin=dict(t=40, b=10, l=10, r=10))
+                                st.plotly_chart(fig_gauge, use_container_width=True)
+
+                            # ── b. Confidence Interval chart ───────────────────
+                            with col_g2:
+                                pred_pct   = prediction * 100
+                                lower_pct  = ci_lower * 100
+                                upper_pct  = ci_upper * 100
+                                fig_ci = go.Figure(go.Scatter(
+                                    x=[pred_pct],
+                                    y=[0],
+                                    mode="markers",
+                                    marker=dict(size=14, color="royalblue"),
+                                    error_x=dict(
+                                        type="data",
+                                        symmetric=False,
+                                        minus=abs(pred_pct - lower_pct),
+                                        plus=abs(upper_pct - pred_pct),
+                                        visible=True,
+                                        color="royalblue",
+                                        thickness=3,
+                                        width=8
+                                    ),
+                                    name="Prediction ± CI"
+                                ))
+                                fig_ci.update_layout(
+                                    title="Conformal Prediction Interval",
+                                    xaxis_title="Predicted Return (%)",
+                                    yaxis=dict(showticklabels=False, zeroline=False),
+                                    height=300,
+                                    margin=dict(t=40, b=40, l=10, r=10)
+                                )
+                                st.plotly_chart(fig_ci, use_container_width=True)
+
+                            # ── c. Source Relevance Bar chart ──────────────────
+                            if retrieved_docs:
+                                st.markdown("### Source Relevance")
+                                relevances = [
+                                    1 - doc["distance"] if "distance" in doc and doc["distance"] is not None
+                                    else 0.8
+                                    for doc in retrieved_docs
+                                ]
+                                titles = [
+                                    (doc.get("metadata", {}).get("title", f"Doc {i+1}") or f"Doc {i+1}")[:50]
+                                    for i, doc in enumerate(retrieved_docs)
+                                ]
+                                fig_bar = go.Figure(go.Bar(
+                                    x=relevances,
+                                    y=titles,
+                                    orientation="h",
+                                    marker=dict(
+                                        color=relevances,
+                                        colorscale="Greens",
+                                        showscale=True,
+                                        cmin=0,
+                                        cmax=1
+                                    )
+                                ))
+                                fig_bar.update_layout(
+                                    title="Retrieved Document Relevance Scores",
+                                    xaxis_title="Relevance Score (1 - distance)",
+                                    yaxis_title="Document",
+                                    height=max(250, 50 * len(retrieved_docs)),
+                                    margin=dict(t=40, b=40, l=10, r=10)
+                                )
+                                st.plotly_chart(fig_bar, use_container_width=True)
+
+                            # ── d. Narrative text ──────────────────────────────
+                            st.markdown("### Generated Market Narrative")
+                            st.markdown(narrative)
+
+                            # ── Metadata row ───────────────────────────────────
+                            st.markdown("---")
+                            m1, m2, m3, m4 = st.columns(4)
+                            m1.metric("Sentiment", result["sentiment"].title() if result.get("sentiment") else "N/A")
+                            m2.metric("Prediction", f"{input_prediction:+.2f}%")
+                            m3.metric("Sources Used", sources_used)
+                            query_str = result.get("query") or ""
+                            m4.metric("Query", query_str[:30] + "..." if len(query_str) > 30 else query_str)
+
+                            # ── Citations ──────────────────────────────────────
+                            if result.get("citations"):
+                                st.markdown("#### Source Citations")
+                                for i, citation in enumerate(result["citations"], 1):
+                                    with st.expander(f"Citation {i}: {citation['title']}"):
+                                        st.markdown(f"**Source:** {citation['source']}")
+                                        st.markdown(f"**Date:** {citation['date']}")
+                                        if citation.get("url"):
+                                            st.markdown(f"**URL:** {citation['url']}")
+
+                            # ── Retrieved Documents ────────────────────────────
+                            if retrieved_docs:
+                                st.markdown("#### Retrieved Documents")
+                                for i, doc in enumerate(retrieved_docs, 1):
+                                    with st.expander(f"Document {i}: {doc['metadata'].get('title', 'Unknown')}"):
+                                        st.markdown(f"**Source:** {doc['metadata'].get('source', 'Unknown')}")
+                                        st.markdown(f"**Date:** {doc['metadata'].get('date', 'Unknown')}")
+                                        st.markdown(f"**Content:** {doc['text']}")
+                                        if doc.get("distance") is not None:
+                                            st.metric("Relevance Score", f"{1 - doc['distance']:.3f}")
+
+                            # ── Log the run ────────────────────────────────────
+                            if tracer:
+                                tracer.log_graph_run(
+                                    workflow_name="narrator_graph",
+                                    inputs={
+                                        "ticker": ticker,
+                                        "prediction": input_prediction,
+                                        "conformal_interval": (input_ci_lower, input_ci_upper)
+                                    },
+                                    outputs=result
+                                )
+
+                            # ── e. Faithfulness Evaluation button ──────────────
+                            st.markdown("---")
+                            if st.button("Run Faithfulness Evaluation"):
+                                with st.spinner("Running faithfulness evaluation..."):
+                                    try:
+                                        from src.narrator.eval import NarrativeEvaluator
+                                        evaluator = NarrativeEvaluator()
+                                        query_for_eval = result.get("query") or f"{ticker} stock analysis"
+                                        eval_result = evaluator.evaluate_narrative(
+                                            narrative, retrieved_docs, query_for_eval
+                                        )
+                                        faith_score = eval_result.get("scores", {}).get("faithfulness", 0.0)
+                                        if isinstance(faith_score, str):
+                                            faith_score = 0.0
+                                        st.metric("Faithfulness Score", f"{faith_score:.3f}")
+                                        fig_faith = go.Figure(go.Indicator(
+                                            mode="gauge+number",
+                                            value=float(faith_score),
+                                            title={"text": "Faithfulness"},
+                                            gauge={
+                                                "axis": {"range": [0, 1]},
+                                                "bar": {"color": "steelblue"},
+                                                "steps": [
+                                                    {"range": [0, 0.4], "color": "rgba(255,80,80,0.3)"},
+                                                    {"range": [0.4, 0.7], "color": "rgba(255,200,80,0.3)"},
+                                                    {"range": [0.7, 1.0], "color": "rgba(80,200,80,0.3)"}
+                                                ]
+                                            }
+                                        ))
+                                        fig_faith.update_layout(height=280, margin=dict(t=40, b=10, l=10, r=10))
+                                        st.plotly_chart(fig_faith, use_container_width=True)
+                                        is_fallback = eval_result.get("fallback", False)
+                                        method = eval_result.get("scores", {}).get("method", "ragas")
+                                        st.caption(f"Evaluation method: {'lexical overlap (fallback)' if is_fallback else method}")
+                                    except Exception as eval_err:
+                                        st.error(f"Evaluation error: {eval_err}")
+
+                            # ── f. Agent Trace Log Viewer ──────────────────────
+                            JSONL_LOG = Path(REPO_ROOT) / "logs" / "agent_traces.jsonl"
+                            with st.expander("View Agent Trace Log"):
+                                if JSONL_LOG.exists():
+                                    try:
+                                        lines = JSONL_LOG.read_text(encoding="utf-8").splitlines()
+                                        last_10 = lines[-10:]
+                                        records = []
+                                        for ln in last_10:
+                                            try:
+                                                records.append(json.loads(ln))
+                                            except Exception:
+                                                pass
+                                        if records:
+                                            import pandas as _pd
+                                            st.dataframe(_pd.DataFrame(records), use_container_width=True)
+                                        else:
+                                            st.info("Trace log is empty.")
+                                    except Exception as log_err:
+                                        st.error(f"Could not read trace log: {log_err}")
+                                else:
+                                    st.info("No trace log yet. Run a narrative generation first.")
+
+                        else:
+                            st.error(f"Error generating narrative: {result.get('error', 'Unknown error')}")
+                    
+                    except Exception as e:
+                        st.error(f"Error in narrative generation: {e}")
+                        st.exception(e)
+            
+            st.markdown("---")
+            
+            # Vector store management
+            st.markdown("#### Vector Store Management")
+            
+            col_a, col_b = st.columns(2)
+            with col_a:
+                if st.button("Reinitialize Vector Store"):
+                    with st.spinner("Reinitializing vector store..."):
+                        try:
+                            narrator_graph.initialize_vector_store(ticker)
+                            st.success("Vector store reinitialized successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error reinitializing: {e}")
+            
+            with col_b:
+                if st.button("Clear Vector Store"):
+                    with st.spinner("Clearing vector store..."):
+                        try:
+                            vector_store.clear_collection()
+                            st.success("Vector store cleared successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error clearing: {e}")
+            
+            # Evaluation section
+            st.markdown("---")
+            st.markdown("#### Narrative Evaluation")
+            
+            st.markdown("""
+            **RAGAS-based Evaluation**: The system includes RAGAS metrics to evaluate narrative faithfulness 
+            against retrieved sources. This ensures the AI narratives are grounded in the actual retrieved documents.
+            
+            **Metrics Available:**
+            - **Faithfulness**: Measures how well the narrative aligns with retrieved context
+            - **Answer Relevancy**: Measures how relevant the narrative is to the original query
+            - **Context Precision**: Measures the relevance of retrieved documents
+            
+            To run evaluation, use the evaluation script in `src/narrator/eval.py`.
+            """)
+            
+            # System explanation
+            st.markdown("---")
+            st.markdown("#### How It Works")
+            
+            st.markdown("""
+            **AI Market Narrator Pipeline:**
+            
+            1. **Retriever Agent**: Uses ChromaDB vector store to find relevant earnings call transcripts 
+               and financial news articles based on the prediction context.
+            
+            2. **Synthesis Agent**: Reads the model prediction, conformal interval, and retrieved documents 
+               to generate a plain-English narrative explaining the bullish/bearish stance.
+            
+            3. **Citation System**: Automatically extracts and formats citations from the retrieved documents 
+               to provide transparency and source attribution.
+            
+            4. **Observability**: Every agent run is logged to Langfuse for monitoring and debugging.
+            
+            5. **Evaluation**: RAGAS-based evaluation ensures narrative faithfulness against retrieved sources.
+            
+            **Technologies Used:**
+            - **LangGraph**: Multi-agent workflow orchestration
+            - **ChromaDB**: Vector database for semantic search
+            - **LangChain**: LLM integration and agent framework
+            - **Langfuse**: Observability and tracing
+            - **RAGAS**: Evaluation metrics for RAG systems
+            """)
+    else:
+        # Show information about what the AI Narrator would do
+        st.markdown("---")
+        st.markdown("#### AI Market Narrator Features")
+        
+        st.markdown("""
+        The AI Market Narrator provides:
+        
+        - **Agentic RAG System**: Multi-agent workflow with retriever and synthesis agents
+        - **ChromaDB Vector Store**: Semantic search over earnings call transcripts and financial news
+        - **Citation System**: Automatic source attribution for all narrative claims
+        - **Langfuse Observability**: Comprehensive logging and tracing of all agent runs
+        - **RAGAS Evaluation**: Faithfulness scoring to ensure narratives are grounded in retrieved sources
+        
+        **To enable these features, install the additional dependencies:**
+        ```bash
+        pip install langchain langchain-openai langgraph langfuse chromadb sentence-transformers ragas openai
+        ```
+        
+        **Required Environment Variables:**
+        - `OPENAI_API_KEY`: Your OpenAI API key for LLM-powered narrative generation
+        - `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`: Optional, for observability
+        """)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 10 — ARCHITECTURE
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_arch:
     st.subheader("System Architecture & Edge")
