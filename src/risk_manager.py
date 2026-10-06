@@ -156,10 +156,11 @@ class RiskManager:
         take_profit = last_price + stop_dist * self.cfg.take_profit_ratio
 
         # ── Position sizing ───────────────────────────────────────────────────
-        # Risk per share = distance to stop
+        # Keep both downside risk and position notional within configured limits.
         risk_per_share = max(last_price - stop_loss, 0.01)
+        max_position_value = self.cfg.portfolio_value * self.cfg.max_position_pct
 
-        # Max $ risk per trade = portfolio × max_position_pct × kelly
+        # Kelly-adjusted downside-risk budget; notional is capped separately below.
         max_risk_dollars = self.cfg.portfolio_value * self.cfg.max_position_pct * kf
 
         # Check portfolio heat
@@ -175,9 +176,17 @@ class RiskManager:
                 kelly_fraction=kf, notes="Portfolio heat limit reached",
             )
 
-        shares = int(max_risk_dollars / risk_per_share)
+        shares_by_risk = int(max_risk_dollars / risk_per_share)
+        shares_by_value = int(max_position_value / last_price) if last_price > 0 else 0
+        shares = min(shares_by_risk, shares_by_value)
+
         if shares < 1:
-            shares = 1
+            return PositionOrder(
+                ticker=ticker, signal="HOLD", shares=0,
+                entry_price=last_price, stop_loss=stop_loss, take_profit=take_profit,
+                position_value=0, risk_per_trade=0, risk_pct=0,
+                kelly_fraction=kf, notes="Position limits do not allow one share",
+            )
 
         position_value = shares * last_price
         risk_per_trade = shares * risk_per_share

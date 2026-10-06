@@ -297,6 +297,20 @@ def execute_trade(request: ExecuteRequest):
     Required env vars for Alpaca:
       ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL
     """
+    # HITL gate
+    try:
+        from src.copilot.hitl_router import HITLRouter, make_signal_id
+        _pos_val = float(getattr(request, 'position_value', 0) or 0)
+        if _pos_val > 0:
+            _hitl = HITLRouter()
+            _pending = [p for p in _hitl.pending_approvals() if p.get('ticker') == getattr(request, 'ticker', '')]
+            if _pending:
+                raise HTTPException(status_code=403, detail={"error": "HITL_REQUIRED", "signal_id": _pending[0]['signal_id']})
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
     broker = request.broker.lower()
 
     if broker == "paper":
@@ -367,3 +381,104 @@ def execute_trade(request: ExecuteRequest):
             raise HTTPException(status_code=500, detail=f"Execution failed: {e}")
 
     raise HTTPException(status_code=400, detail=f"Unknown broker: {broker}. Use 'alpaca' or 'paper'")
+
+
+# ── Alpha Engine Pro v2.0 endpoints ──────────────────────────────────────────
+import traceback as _tb
+
+
+@app.get("/strategies")
+def list_strategies():
+    try:
+        from src.strategy_registry import StrategyRegistry
+        reg = StrategyRegistry()
+        names = reg.list_strategies()
+        strategies = []
+        for n in names:
+            cfg = reg.get(n)
+            strategies.append({
+                "name": cfg.name,
+                "tickers": cfg.tickers,
+                "feature_set_count": len(cfg.feature_set),
+                "tenant_id": cfg.tenant_id,
+                "description": cfg.description,
+            })
+        return {"strategies": strategies}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/strategies/{name}/run")
+def run_strategy(name: str, source: str = "csv"):
+    try:
+        from src.strategy_registry import StrategyRegistry
+        return StrategyRegistry().run_strategy(name, source=source)
+    except KeyError:
+        raise HTTPException(404, f"Strategy '{name}' not found")
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/track-record")
+def get_track_record(strategy: str = "nflx_momentum", ticker: str = "", tenant_id: str = "default"):
+    try:
+        from src.track_record import TrackRecord
+        tr = TrackRecord(strategy_name=strategy)
+        df = tr.load()
+        if ticker and "ticker" in df.columns:
+            df = df[df["ticker"] == ticker]
+        metrics = tr.compute_metrics()
+        return {"strategy": strategy, "metrics": metrics, "n_rows": len(df)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+class CopilotRequest(BaseModel):
+    ticker: str = "NFLX"
+    strategy_name: str = "nflx_momentum"
+    query: str = ""
+    position_value: float = 0.0
+
+
+@app.post("/copilot/research")
+def copilot_research(req: CopilotRequest):
+    try:
+        from src.copilot import CopilotGraph
+        g = CopilotGraph(ticker=req.ticker)
+        result = g.run(ticker=req.ticker, query=req.query or None, position_value=req.position_value)
+        return result
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/hitl/pending")
+def hitl_pending():
+    try:
+        from src.copilot.hitl_router import HITLRouter
+        return {"pending": HITLRouter().pending_approvals()}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+class HITLApprovalRequest(BaseModel):
+    approver: str = "human"
+
+
+@app.post("/hitl/approve/{signal_id}")
+def hitl_approve(signal_id: str, req: HITLApprovalRequest):
+    try:
+        from src.copilot.hitl_router import HITLRouter
+        return HITLRouter().approve(signal_id, approver=req.approver)
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/compliance/report")
+def compliance_report(tenant_id: str = "default"):
+    try:
+        from src.compliance_sebi import SEBIComplianceChecker
+        checker = SEBIComplianceChecker()
+        return checker.generate_report()
+    except Exception as e:
+        raise HTTPException(500, str(e))
+

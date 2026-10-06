@@ -3,6 +3,17 @@ import joblib
 import pandas as pd
 import numpy as np
 import os, sys, json
+from pathlib import Path
+
+try:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from src.branding_config import get_branding, TenantIsolation
+    _brand = get_branding()
+    APP_NAME = _brand.app_name
+    PRIMARY_COLOR = _brand.primary_color
+except Exception:
+    APP_NAME = "Alpha Engine Pro"
+    PRIMARY_COLOR = "#e50914"
 
 import plotly.graph_objects as go
 import plotly.express as px
@@ -17,7 +28,7 @@ from src.feature_utils import build_prediction_row
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="NFLX Alpha Engine",
+    page_title=APP_NAME,
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -101,7 +112,7 @@ df_live   = load_live_ohlcv(ticker, "2y")
 df_source = df_live if df_live is not None else df_feat[["Open","High","Low","Close","Volume"]]
 
 # ── Hero header ───────────────────────────────────────────────────────────────
-st.markdown('<p class="hero-title">Alpha Engine</p>', unsafe_allow_html=True)
+st.markdown(f'<p class="hero-title">{APP_NAME}</p>', unsafe_allow_html=True)
 st.caption(f"Real-time ML prediction · {ticker} · Backtesting · Sentiment · Risk · Drift Monitor")
 
 # ── KPI row ───────────────────────────────────────────────────────────────────
@@ -128,9 +139,17 @@ tabs = st.tabs([
     "⚠️ Risk",
     "🔬 Drift Monitor",
     "🔍 Explainability",
+    "🤖 AI Narrative",
     "🏗 Architecture",
+    "🧪 Strategy Lab",
+    "🔬 Research Copilot",
+    "📊 Track Record",
+    "⚖️ Compliance",
+    "📡 Observability",
 ])
-tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk, tab_drift, tab_shap, tab_arch = tabs
+(tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk,
+ tab_drift, tab_shap, tab_narrative, tab_arch,
+ tab_strategy, tab_copilot, tab_track, tab_compliance, tab_obs) = tabs
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — MARKET OVERVIEW (Candlestick + indicators)
@@ -486,6 +505,23 @@ with tab_sent:
             from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
             sia   = SentimentIntensityAnalyzer()
             news  = yf.Ticker("NFLX").news or []
+            
+            # If no news from yfinance, use sample data
+            if not news:
+                st.info("Live news unavailable from Yahoo Finance. Using sample data for demonstration.")
+                import time
+                now = time.time()
+                sample_news = [
+                    {"title": "Netflix stock surges on strong subscriber growth", "providerPublishTime": int(now - 86400)},
+                    {"title": "Netflix faces increasing competition in streaming market", "providerPublishTime": int(now - 172800)},
+                    {"title": "Netflix reports better than expected earnings", "providerPublishTime": int(now - 259200)},
+                    {"title": "Netflix content strategy drives international expansion", "providerPublishTime": int(now - 345600)},
+                    {"title": "Wall Street remains bullish on Netflix despite valuation concerns", "providerPublishTime": int(now - 432000)},
+                    {"title": "Netflix advertising business shows promise", "providerPublishTime": int(now - 518400)},
+                    {"title": "Netflix original content continues to drive engagement", "providerPublishTime": int(now - 604800)},
+                ]
+                news = sample_news
+            
             rows  = []
             for item in news:
                 ts    = pd.Timestamp(item.get("providerPublishTime", 0), unit="s")
@@ -495,13 +531,16 @@ with tab_sent:
                               "sentiment": "Positive" if score > 0.05
                               else ("Negative" if score < -0.05 else "Neutral")})
             return pd.DataFrame(rows)
+        except ImportError:
+            # Handle missing vaderSentiment gracefully
+            return pd.DataFrame(columns=["date","title","score","sentiment"])
         except Exception as e:
             return pd.DataFrame(columns=["date","title","score","sentiment"])
 
     df_sent = _get_sentiment()
 
     if df_sent.empty:
-        st.warning("Sentiment data unavailable. Install vaderSentiment: `pip install vaderSentiment`")
+        st.warning("Sentiment data unavailable. vaderSentiment may not be installed. Install with: `pip install vaderSentiment`")
     else:
         avg = df_sent["score"].mean()
         pos = (df_sent["sentiment"] == "Positive").sum()
@@ -848,7 +887,430 @@ with tab_shap:
         )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 9 — ARCHITECTURE
+# TAB 9 — AI NARRATIVE
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_narrative:
+    st.subheader("AI Market Narrator")
+    st.caption("Agentic RAG system that explains model predictions with citation-backed narratives from earnings calls and financial news.")
+    
+    # Check if narrator dependencies are available
+    narrator_available = False
+    try:
+        from src.narrator import NarratorGraph, VectorStore, CorpusManager
+        from src.agent_traces import get_tracer
+        narrator_available = True
+    except ImportError as e:
+        st.warning(f"""
+        **AI Narrator dependencies not fully installed.**
+        
+        To enable the AI Narrator features, install the additional dependencies:
+        ```bash
+        pip install langchain langchain-openai langgraph langfuse chromadb sentence-transformers ragas openai
+        ```
+        
+        Error: {str(e)}
+        
+        The rest of the dashboard will continue to work normally.
+        """)
+    
+    if narrator_available:
+        # Initialize narrator components
+        @st.cache_resource(show_spinner="Loading AI Narrator components...")
+        def load_narrator_components():
+            try:
+                vector_store = VectorStore()
+                corpus_manager = CorpusManager()
+                narrator_graph = NarratorGraph(
+                    vector_store=vector_store,
+                    corpus_manager=corpus_manager
+                )
+                tracer = get_tracer()
+                
+                # Initialize vector store with sample data if empty
+                stats = vector_store.get_collection_stats()
+                if stats["document_count"] == 0:
+                    narrator_graph.initialize_vector_store("NFLX")
+                
+                return narrator_graph, vector_store, tracer
+            except Exception as e:
+                st.error(f"Error loading narrator components: {e}")
+                return None, None, None
+        
+        narrator_graph, vector_store, tracer = load_narrator_components()
+        
+        if narrator_graph is None:
+            st.warning("AI Narrator components could not be loaded. Please check the error above.")
+        else:
+            # Show vector store stats
+            stats = vector_store.get_collection_stats()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Documents in Vector Store", stats["document_count"])
+            c2.metric("Collection Name", stats["collection_name"])
+            c3.metric("Embedding Model", stats["embedding_model"])
+            
+            st.markdown("---")
+            
+            # Generate narrative section
+            st.markdown("#### Generate Market Narrative")
+            
+            # Get current price from live data
+            current_price = df_source["Close"].iloc[-1] if not df_source.empty else 650.0
+            
+            # Input prediction parameters
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                input_prediction = st.number_input(
+                    "Predicted Return (%)",
+                    value=0.5,
+                    min_value=-10.0,
+                    max_value=10.0,
+                    step=0.1,
+                    help="Model's predicted next-day return"
+                )
+            with col2:
+                input_ci_lower = st.number_input(
+                    "CI Lower Bound (%)",
+                    value=-0.5,
+                    min_value=-10.0,
+                    max_value=10.0,
+                    step=0.1,
+                    help="Lower bound of conformal prediction interval"
+                )
+            with col3:
+                input_ci_upper = st.number_input(
+                    "CI Upper Bound (%)",
+                    value=1.5,
+                    min_value=-10.0,
+                    max_value=10.0,
+                    step=0.1,
+                    help="Upper bound of conformal prediction interval"
+                )
+            
+            current_price = st.number_input(
+                "Current Price ($)",
+                value=current_price,
+                min_value=1.0,
+                max_value=10000.0,
+                step=1.0
+            )
+            
+            if st.button("Generate AI Narrative", type="primary"):
+                with st.spinner("Generating narrative with RAG pipeline..."):
+                    try:
+                        # Run the narrator workflow
+                        result = narrator_graph.run(
+                            ticker=ticker,
+                            prediction=input_prediction / 100,  # Convert to decimal
+                            conformal_interval=(input_ci_lower / 100, input_ci_upper / 100),
+                            current_price=current_price
+                        )
+                        
+                        if result["success"]:
+                            narrative   = result["narrative"] or ""
+                            prediction  = result["prediction"]          # decimal
+                            ci_lower, ci_upper = result["conformal_interval"]
+                            retrieved_docs = result.get("retrieved_documents") or []
+                            sources_used = result.get("sources_used", len(retrieved_docs))
+
+                            # ── a. Sentiment Gauge ─────────────────────────────
+                            st.markdown("### Sentiment & Confidence")
+                            col_g1, col_g2 = st.columns(2)
+
+                            with col_g1:
+                                sentiment_value = max(-1.0, min(1.0, prediction * 100))
+                                fig_gauge = go.Figure(go.Indicator(
+                                    mode="gauge+number",
+                                    value=sentiment_value,
+                                    title={"text": "Sentiment Score"},
+                                    gauge={
+                                        "axis": {"range": [-1, 1]},
+                                        "bar": {"color": "darkblue"},
+                                        "steps": [
+                                            {"range": [-1, 0], "color": "rgba(255,80,80,0.3)"},
+                                            {"range": [0, 1],  "color": "rgba(80,200,80,0.3)"}
+                                        ],
+                                        "threshold": {
+                                            "line": {"color": "black", "width": 3},
+                                            "thickness": 0.75,
+                                            "value": sentiment_value
+                                        }
+                                    }
+                                ))
+                                fig_gauge.update_layout(height=300, margin=dict(t=40, b=10, l=10, r=10))
+                                st.plotly_chart(fig_gauge, use_container_width=True)
+
+                            # ── b. Confidence Interval chart ───────────────────
+                            with col_g2:
+                                pred_pct   = prediction * 100
+                                lower_pct  = ci_lower * 100
+                                upper_pct  = ci_upper * 100
+                                fig_ci = go.Figure(go.Scatter(
+                                    x=[pred_pct],
+                                    y=[0],
+                                    mode="markers",
+                                    marker=dict(size=14, color="royalblue"),
+                                    error_x=dict(
+                                        type="data",
+                                        symmetric=False,
+                                        minus=abs(pred_pct - lower_pct),
+                                        plus=abs(upper_pct - pred_pct),
+                                        visible=True,
+                                        color="royalblue",
+                                        thickness=3,
+                                        width=8
+                                    ),
+                                    name="Prediction ± CI"
+                                ))
+                                fig_ci.update_layout(
+                                    title="Conformal Prediction Interval",
+                                    xaxis_title="Predicted Return (%)",
+                                    yaxis=dict(showticklabels=False, zeroline=False),
+                                    height=300,
+                                    margin=dict(t=40, b=40, l=10, r=10)
+                                )
+                                st.plotly_chart(fig_ci, use_container_width=True)
+
+                            # ── c. Source Relevance Bar chart ──────────────────
+                            if retrieved_docs:
+                                st.markdown("### Source Relevance")
+                                relevances = [
+                                    1 - doc["distance"] if "distance" in doc and doc["distance"] is not None
+                                    else 0.8
+                                    for doc in retrieved_docs
+                                ]
+                                titles = [
+                                    (doc.get("metadata", {}).get("title", f"Doc {i+1}") or f"Doc {i+1}")[:50]
+                                    for i, doc in enumerate(retrieved_docs)
+                                ]
+                                fig_bar = go.Figure(go.Bar(
+                                    x=relevances,
+                                    y=titles,
+                                    orientation="h",
+                                    marker=dict(
+                                        color=relevances,
+                                        colorscale="Greens",
+                                        showscale=True,
+                                        cmin=0,
+                                        cmax=1
+                                    )
+                                ))
+                                fig_bar.update_layout(
+                                    title="Retrieved Document Relevance Scores",
+                                    xaxis_title="Relevance Score (1 - distance)",
+                                    yaxis_title="Document",
+                                    height=max(250, 50 * len(retrieved_docs)),
+                                    margin=dict(t=40, b=40, l=10, r=10)
+                                )
+                                st.plotly_chart(fig_bar, use_container_width=True)
+
+                            # ── d. Narrative text ──────────────────────────────
+                            st.markdown("### Generated Market Narrative")
+                            st.markdown(narrative)
+
+                            # ── Metadata row ───────────────────────────────────
+                            st.markdown("---")
+                            m1, m2, m3, m4 = st.columns(4)
+                            m1.metric("Sentiment", result["sentiment"].title() if result.get("sentiment") else "N/A")
+                            m2.metric("Prediction", f"{input_prediction:+.2f}%")
+                            m3.metric("Sources Used", sources_used)
+                            query_str = result.get("query") or ""
+                            m4.metric("Query", query_str[:30] + "..." if len(query_str) > 30 else query_str)
+
+                            # ── Citations ──────────────────────────────────────
+                            if result.get("citations"):
+                                st.markdown("#### Source Citations")
+                                for i, citation in enumerate(result["citations"], 1):
+                                    with st.expander(f"Citation {i}: {citation['title']}"):
+                                        st.markdown(f"**Source:** {citation['source']}")
+                                        st.markdown(f"**Date:** {citation['date']}")
+                                        if citation.get("url"):
+                                            st.markdown(f"**URL:** {citation['url']}")
+
+                            # ── Retrieved Documents ────────────────────────────
+                            if retrieved_docs:
+                                st.markdown("#### Retrieved Documents")
+                                for i, doc in enumerate(retrieved_docs, 1):
+                                    with st.expander(f"Document {i}: {doc['metadata'].get('title', 'Unknown')}"):
+                                        st.markdown(f"**Source:** {doc['metadata'].get('source', 'Unknown')}")
+                                        st.markdown(f"**Date:** {doc['metadata'].get('date', 'Unknown')}")
+                                        st.markdown(f"**Content:** {doc['text']}")
+                                        if doc.get("distance") is not None:
+                                            st.metric("Relevance Score", f"{1 - doc['distance']:.3f}")
+
+                            # ── Log the run ────────────────────────────────────
+                            if tracer:
+                                tracer.log_graph_run(
+                                    workflow_name="narrator_graph",
+                                    inputs={
+                                        "ticker": ticker,
+                                        "prediction": input_prediction,
+                                        "conformal_interval": (input_ci_lower, input_ci_upper)
+                                    },
+                                    outputs=result
+                                )
+
+                            # ── e. Faithfulness Evaluation button ──────────────
+                            st.markdown("---")
+                            if st.button("Run Faithfulness Evaluation"):
+                                with st.spinner("Running faithfulness evaluation..."):
+                                    try:
+                                        from src.narrator.eval import NarrativeEvaluator
+                                        evaluator = NarrativeEvaluator()
+                                        query_for_eval = result.get("query") or f"{ticker} stock analysis"
+                                        eval_result = evaluator.evaluate_narrative(
+                                            narrative, retrieved_docs, query_for_eval
+                                        )
+                                        faith_score = eval_result.get("scores", {}).get("faithfulness", 0.0)
+                                        if isinstance(faith_score, str):
+                                            faith_score = 0.0
+                                        st.metric("Faithfulness Score", f"{faith_score:.3f}")
+                                        fig_faith = go.Figure(go.Indicator(
+                                            mode="gauge+number",
+                                            value=float(faith_score),
+                                            title={"text": "Faithfulness"},
+                                            gauge={
+                                                "axis": {"range": [0, 1]},
+                                                "bar": {"color": "steelblue"},
+                                                "steps": [
+                                                    {"range": [0, 0.4], "color": "rgba(255,80,80,0.3)"},
+                                                    {"range": [0.4, 0.7], "color": "rgba(255,200,80,0.3)"},
+                                                    {"range": [0.7, 1.0], "color": "rgba(80,200,80,0.3)"}
+                                                ]
+                                            }
+                                        ))
+                                        fig_faith.update_layout(height=280, margin=dict(t=40, b=10, l=10, r=10))
+                                        st.plotly_chart(fig_faith, use_container_width=True)
+                                        is_fallback = eval_result.get("fallback", False)
+                                        method = eval_result.get("scores", {}).get("method", "ragas")
+                                        st.caption(f"Evaluation method: {'lexical overlap (fallback)' if is_fallback else method}")
+                                    except Exception as eval_err:
+                                        st.error(f"Evaluation error: {eval_err}")
+
+                            # ── f. Agent Trace Log Viewer ──────────────────────
+                            JSONL_LOG = Path(REPO_ROOT) / "logs" / "agent_traces.jsonl"
+                            with st.expander("View Agent Trace Log"):
+                                if JSONL_LOG.exists():
+                                    try:
+                                        lines = JSONL_LOG.read_text(encoding="utf-8").splitlines()
+                                        last_10 = lines[-10:]
+                                        records = []
+                                        for ln in last_10:
+                                            try:
+                                                records.append(json.loads(ln))
+                                            except Exception:
+                                                pass
+                                        if records:
+                                            import pandas as _pd
+                                            st.dataframe(_pd.DataFrame(records), use_container_width=True)
+                                        else:
+                                            st.info("Trace log is empty.")
+                                    except Exception as log_err:
+                                        st.error(f"Could not read trace log: {log_err}")
+                                else:
+                                    st.info("No trace log yet. Run a narrative generation first.")
+
+                        else:
+                            st.error(f"Error generating narrative: {result.get('error', 'Unknown error')}")
+                    
+                    except Exception as e:
+                        st.error(f"Error in narrative generation: {e}")
+                        st.exception(e)
+            
+            st.markdown("---")
+            
+            # Vector store management
+            st.markdown("#### Vector Store Management")
+            
+            col_a, col_b = st.columns(2)
+            with col_a:
+                if st.button("Reinitialize Vector Store"):
+                    with st.spinner("Reinitializing vector store..."):
+                        try:
+                            narrator_graph.initialize_vector_store(ticker)
+                            st.success("Vector store reinitialized successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error reinitializing: {e}")
+            
+            with col_b:
+                if st.button("Clear Vector Store"):
+                    with st.spinner("Clearing vector store..."):
+                        try:
+                            vector_store.clear_collection()
+                            st.success("Vector store cleared successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error clearing: {e}")
+            
+            # Evaluation section
+            st.markdown("---")
+            st.markdown("#### Narrative Evaluation")
+            
+            st.markdown("""
+            **RAGAS-based Evaluation**: The system includes RAGAS metrics to evaluate narrative faithfulness 
+            against retrieved sources. This ensures the AI narratives are grounded in the actual retrieved documents.
+            
+            **Metrics Available:**
+            - **Faithfulness**: Measures how well the narrative aligns with retrieved context
+            - **Answer Relevancy**: Measures how relevant the narrative is to the original query
+            - **Context Precision**: Measures the relevance of retrieved documents
+            
+            To run evaluation, use the evaluation script in `src/narrator/eval.py`.
+            """)
+            
+            # System explanation
+            st.markdown("---")
+            st.markdown("#### How It Works")
+            
+            st.markdown("""
+            **AI Market Narrator Pipeline:**
+            
+            1. **Retriever Agent**: Uses ChromaDB vector store to find relevant earnings call transcripts 
+               and financial news articles based on the prediction context.
+            
+            2. **Synthesis Agent**: Reads the model prediction, conformal interval, and retrieved documents 
+               to generate a plain-English narrative explaining the bullish/bearish stance.
+            
+            3. **Citation System**: Automatically extracts and formats citations from the retrieved documents 
+               to provide transparency and source attribution.
+            
+            4. **Observability**: Every agent run is logged to Langfuse for monitoring and debugging.
+            
+            5. **Evaluation**: RAGAS-based evaluation ensures narrative faithfulness against retrieved sources.
+            
+            **Technologies Used:**
+            - **LangGraph**: Multi-agent workflow orchestration
+            - **ChromaDB**: Vector database for semantic search
+            - **LangChain**: LLM integration and agent framework
+            - **Langfuse**: Observability and tracing
+            - **RAGAS**: Evaluation metrics for RAG systems
+            """)
+    else:
+        # Show information about what the AI Narrator would do
+        st.markdown("---")
+        st.markdown("#### AI Market Narrator Features")
+        
+        st.markdown("""
+        The AI Market Narrator provides:
+        
+        - **Agentic RAG System**: Multi-agent workflow with retriever and synthesis agents
+        - **ChromaDB Vector Store**: Semantic search over earnings call transcripts and financial news
+        - **Citation System**: Automatic source attribution for all narrative claims
+        - **Langfuse Observability**: Comprehensive logging and tracing of all agent runs
+        - **RAGAS Evaluation**: Faithfulness scoring to ensure narratives are grounded in retrieved sources
+        
+        **To enable these features, install the additional dependencies:**
+        ```bash
+        pip install langchain langchain-openai langgraph langfuse chromadb sentence-transformers ragas openai
+        ```
+        
+        **Required Environment Variables:**
+        - `OPENAI_API_KEY`: Your OpenAI API key for LLM-powered narrative generation
+        - `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`: Optional, for observability
+        """)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 10 — ARCHITECTURE
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_arch:
     st.subheader("System Architecture & Edge")
@@ -947,3 +1409,339 @@ Data Sources (multi-source)
 
 Run locally: `pytest tests/ -v`
     """)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 11 — STRATEGY LAB
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_strategy:
+    st.subheader("🧪 Strategy Lab")
+    st.caption("Define, run, and compare multi-ticker strategies side by side.")
+    try:
+        from src.strategy_registry import StrategyRegistry, StrategyConfig
+        _reg = StrategyRegistry()
+        _strategy_names = _reg.list_strategies()
+        col_run, col_compare = st.columns(2)
+        with col_run:
+            st.markdown("#### Run a Strategy")
+            sel_strategy = st.selectbox("Select strategy", _strategy_names, key="lab_sel")
+            if sel_strategy:
+                cfg = _reg.get(sel_strategy)
+                st.caption(cfg.description)
+                st.write(f"**Tickers:** {', '.join(cfg.tickers)}")
+                st.write(f"**Feature set:** {len(cfg.feature_set)} features")
+                src_sel = st.selectbox("Data source", ["csv", "yfinance"], key="lab_src")
+                if st.button("▶ Run Strategy", type="primary"):
+                    with st.spinner(f"Running {sel_strategy}..."):
+                        try:
+                            result = _reg.run_strategy(sel_strategy, source=src_sel)
+                            if "error" in result:
+                                st.error(result["error"])
+                            else:
+                                metrics = result.get("metrics", {})
+                                c1, c2, c3, c4 = st.columns(4)
+                                c1.metric("Ticker", result.get("ticker", "?"))
+                                c2.metric("CV R2", f"{metrics.get('CV_R2', metrics.get('R2', 0)):.4f}")
+                                c3.metric("Dir Acc", f"{metrics.get('Dir_Acc', 0):.1f}%")
+                                c4.metric("CV RMSE", f"{metrics.get('CV_RMSE', metrics.get('RMSE', 0)):.4f}")
+                        except Exception as e:
+                            st.error(f"Strategy run failed: {e}")
+        with col_compare:
+            st.markdown("#### Compare Strategies")
+            compare_sel = st.multiselect("Strategies to compare", _strategy_names, default=_strategy_names[:2], key="lab_cmp")
+            if st.button("Compare", type="secondary") and compare_sel:
+                with st.spinner("Comparing strategies..."):
+                    try:
+                        compare_results = _reg.compare_strategies(compare_sel, source="csv")
+                        rows = []
+                        for sname, res in compare_results.items():
+                            if "error" not in res:
+                                m = res.get("metrics", {})
+                                rows.append({"Strategy": sname, "Ticker": res.get("ticker", "?"), "R2": m.get("CV_R2", m.get("R2", 0)), "Dir Acc %": m.get("Dir_Acc", 0), "RMSE": m.get("CV_RMSE", m.get("RMSE", 0))})
+                        if rows:
+                            df_cmp = pd.DataFrame(rows)
+                            fig_cmp = go.Figure()
+                            for col_metric in ["R2", "Dir Acc %"]:
+                                fig_cmp.add_trace(go.Bar(name=col_metric, x=df_cmp["Strategy"], y=df_cmp[col_metric]))
+                            fig_cmp.update_layout(template="plotly_dark", barmode="group", height=350, title="Strategy Comparison", margin=dict(l=0,r=0,t=40,b=0))
+                            st.plotly_chart(fig_cmp, use_container_width=True)
+                            st.dataframe(df_cmp, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Comparison failed: {e}")
+        st.markdown("---")
+        st.markdown("#### Register New Strategy")
+        with st.expander("Define a new strategy"):
+            new_name = st.text_input("Strategy name", placeholder="my_strategy")
+            new_tickers = st.text_input("Tickers (comma-separated)", value="NFLX,AAPL")
+            new_fset = st.selectbox("Feature set", ["full", "momentum", "mean_reversion", "volume"])
+            new_desc = st.text_area("Description", height=80)
+            if st.button("Register Strategy") and new_name:
+                try:
+                    from src.strategy_registry import _MOMENTUM_FEATURES, _MEAN_REVERSION_FEATURES, _FULL_FEATURES
+                    fset_map = {"full": _FULL_FEATURES, "momentum": _MOMENTUM_FEATURES, "mean_reversion": _MEAN_REVERSION_FEATURES, "volume": _MOMENTUM_FEATURES}
+                    new_cfg = StrategyConfig(name=new_name, tickers=[t.strip() for t in new_tickers.split(",") if t.strip()], feature_set=fset_map[new_fset], description=new_desc)
+                    _reg.register(new_cfg)
+                    st.success(f"Strategy '{new_name}' registered!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Registration failed: {e}")
+    except Exception as e:
+        st.warning(f"Strategy Lab unavailable: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 12 — RESEARCH COPILOT
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_copilot:
+    st.subheader("🔬 Research Copilot")
+    st.caption("AI-powered research notes with HITL approval gate and citation-backed analysis.")
+    try:
+        from src.copilot import CopilotGraph
+        from src.copilot.hitl_router import HITLRouter
+        cop_col1, cop_col2, cop_col3 = st.columns(3)
+        cop_ticker = cop_col1.text_input("Ticker", value=ticker, key="cop_ticker").upper()
+        cop_price = cop_col2.number_input("Current Price ($)", value=float(df_source["Close"].iloc[-1]) if not df_source.empty else 650.0, key="cop_price")
+        cop_query = cop_col3.text_input("Custom query (optional)", placeholder="Why is the model bullish?", key="cop_query")
+        cop_pos_val = st.number_input("Proposed Position Value ($)", value=5000.0, step=1000.0, key="cop_pos")
+        if st.button("Generate Research Note", type="primary", key="cop_btn"):
+            with st.spinner("Running Copilot pipeline (retrieve -> tool -> write -> HITL)..."):
+                try:
+                    _copilot = CopilotGraph(ticker=cop_ticker)
+                    cop_result = _copilot.run(ticker=cop_ticker, query=cop_query or None, position_value=cop_pos_val)
+                    st.session_state["cop_result"] = cop_result
+                except Exception as e:
+                    st.error(f"Copilot error: {e}")
+        if "cop_result" in st.session_state:
+            cop_result = st.session_state["cop_result"]
+            tool_state = cop_result.get("tool_state", {})
+            hitl = cop_result.get("hitl_result", {})
+            if hitl.get("requires_hitl"):
+                st.warning(f"HITL Required - Position value exceeds threshold. Signal ID: {hitl.get('signal_id','?')}")
+                hcol1, hcol2 = st.columns(2)
+                if hcol1.button("Approve Signal", key="hitl_approve"):
+                    HITLRouter().approve(hitl.get("signal_id",""), approver=st.session_state.get("username","analyst"))
+                    st.success("Signal approved!")
+                if hcol2.button("Reject Signal", key="hitl_reject"):
+                    HITLRouter().reject(hitl.get("signal_id",""), reason="Manual rejection")
+                    st.error("Signal rejected.")
+            else:
+                st.success("Signal auto-approved (below HITL threshold)")
+            pred_ret = tool_state.get("pred_return", 0.0) or 0.0
+            ci_l = tool_state.get("ci_lower", pred_ret - 0.5)
+            ci_u = tool_state.get("ci_upper", pred_ret + 0.5)
+            gc1, gc2 = st.columns(2)
+            with gc1:
+                fig_gauge = go.Figure(go.Indicator(mode="gauge+number", value=float(pred_ret)*100, title={"text": "Predicted Return (%)"}, gauge={"axis": {"range": [-3, 3]}, "bar": {"color": "#00c853" if pred_ret >= 0 else "#e50914"}, "steps": [{"range": [-3, 0], "color": "rgba(229,9,20,0.2)"}, {"range": [0, 3], "color": "rgba(0,200,83,0.2)"}]}))
+                fig_gauge.update_layout(height=280, margin=dict(t=40,b=10,l=10,r=10))
+                st.plotly_chart(fig_gauge, use_container_width=True)
+            with gc2:
+                fig_ci = go.Figure(go.Scatter(x=[float(pred_ret)*100], y=[0], mode="markers", marker=dict(size=16, color="#2196f3"), error_x=dict(type="data", symmetric=False, minus=abs(float(pred_ret)-float(ci_l))*100, plus=abs(float(ci_u)-float(pred_ret))*100, visible=True, color="#2196f3", thickness=4, width=10), name="Prediction +/- CI"))
+                fig_ci.update_layout(title="Conformal Prediction Interval", xaxis_title="Return (%)", yaxis=dict(showticklabels=False), height=280, margin=dict(t=40,b=40,l=10,r=10))
+                st.plotly_chart(fig_ci, use_container_width=True)
+            rm1, rm2, rm3, rm4, rm5 = st.columns(5)
+            rm1.metric("Signal", tool_state.get("signal", "N/A"))
+            rm2.metric("Stop Loss", f"${tool_state.get('stop_loss', 0):.2f}" if tool_state.get("stop_loss") else "N/A")
+            rm3.metric("Take Profit", f"${tool_state.get('take_profit', 0):.2f}" if tool_state.get("take_profit") else "N/A")
+            rm4.metric("Kelly Frac", f"{tool_state.get('kelly_fraction', 0):.3f}")
+            rm5.metric("Position ($)", f"${cop_pos_val:,.0f}")
+            shap_drivers = tool_state.get("shap_drivers", [])
+            if shap_drivers:
+                st.markdown("#### Top Feature Drivers")
+                feats = [d.get("feature","?") for d in shap_drivers]
+                imps = [d.get("importance", 0) for d in shap_drivers]
+                colors = ["#00c853" if d.get("direction","") == "positive" else "#e50914" for d in shap_drivers]
+                fig_shap_c = go.Figure(go.Bar(x=imps, y=feats, orientation="h", marker_color=colors))
+                fig_shap_c.update_layout(template="plotly_dark", height=250, title="SHAP Feature Importance", margin=dict(l=0,r=0,t=40,b=0))
+                st.plotly_chart(fig_shap_c, use_container_width=True)
+            st.markdown("### Research Note")
+            st.markdown(cop_result.get("note", "No note generated."))
+            docs = cop_result.get("retrieval", {}).get("documents", [])
+            if docs:
+                st.markdown(f"**Sources used:** {len(docs)}")
+                titles = [d.get("metadata",{}).get("title","Doc")[:40] for d in docs]
+                dists = [1-(d.get("distance",0.5) or 0.5) for d in docs]
+                fig_src = go.Figure(go.Bar(x=dists, y=titles, orientation="h", marker_color="#ffd700"))
+                fig_src.update_layout(template="plotly_dark", height=200, title="Source Relevance", margin=dict(l=0,r=0,t=30,b=0))
+                st.plotly_chart(fig_src, use_container_width=True)
+                with st.expander("View source documents"):
+                    for i, d in enumerate(docs, 1):
+                        st.markdown(f"**[{i}] {d.get('metadata',{}).get('title','?')}** - {d.get('metadata',{}).get('date','?')}")
+                        st.markdown(f"> {d.get('text','')[:200]}...")
+            method = "Groq LLaMA3" if "groq" in str(cop_result.get("note","")).lower() else "Rule-based fallback"
+            st.caption(f"Generation method: {method} · Sources: {cop_result.get('sources_used',0)}")
+    except Exception as e:
+        st.warning(f"Research Copilot unavailable: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 13 — TRACK RECORD
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_track:
+    st.subheader("📊 Track Record")
+    st.caption("Verifiable, timestamped signal log with institutional-grade performance metrics.")
+    try:
+        from src.track_record import TrackRecord
+        from src.strategy_registry import StrategyRegistry
+        tr_strategies = StrategyRegistry().list_strategies()
+        tr_sel = st.selectbox("Strategy", tr_strategies, key="tr_sel")
+        tr = TrackRecord(strategy_name=tr_sel)
+        tr_df = tr.load()
+        if tr_df.empty:
+            st.info("No track record data yet. Run: python src/track_record_seeder.py")
+            if st.button("Seed Track Record Data"):
+                with st.spinner("Seeding..."):
+                    try:
+                        from src.track_record_seeder import seed_all
+                        seed_all()
+                        st.success("Seeded!")
+                        st.rerun()
+                    except Exception as seed_e:
+                        st.error(f"Seed error: {seed_e}")
+        else:
+            metrics = tr.compute_metrics()
+            equity = tr.get_equity_curve()
+            dd = tr.get_drawdown_series()
+            k1,k2,k3,k4,k5,k6,k7 = st.columns(7)
+            k1.metric("Signals", metrics["n_signals"])
+            k2.metric("Win Rate", f"{metrics['win_rate_pct']:.1f}%")
+            k3.metric("Sharpe", f"{metrics['sharpe']:.2f}")
+            k4.metric("Sortino", f"{metrics['sortino']:.2f}")
+            k5.metric("Calmar", f"{metrics['calmar']:.2f}")
+            k6.metric("Max DD", f"{metrics['max_drawdown']*100:.1f}%")
+            k7.metric("Profit Fac.", f"{metrics['profit_factor']:.2f}")
+            fig_eq = go.Figure(go.Scatter(y=equity.values, mode="lines", line=dict(color="#00c853", width=2), fill="tozeroy", fillcolor="rgba(0,200,83,0.1)", name="Cumulative PnL %"))
+            fig_eq.add_hline(y=0, line_color="white", opacity=0.3)
+            fig_eq.update_layout(template="plotly_dark", height=300, title="Equity Curve (Cumulative PnL %)", margin=dict(l=0,r=0,t=40,b=0))
+            st.plotly_chart(fig_eq, use_container_width=True)
+            fig_dd = go.Figure(go.Scatter(y=dd.values*100, mode="lines", fill="tozeroy", fillcolor="rgba(229,9,20,0.3)", line=dict(color="#e50914", width=1), name="Drawdown %"))
+            fig_dd.update_layout(template="plotly_dark", height=200, title="Drawdown (%)", margin=dict(l=0,r=0,t=40,b=0))
+            st.plotly_chart(fig_dd, use_container_width=True)
+            if "date" in tr_df.columns and len(tr_df) >= 10:
+                try:
+                    tr_df["date"] = pd.to_datetime(tr_df["date"], errors="coerce")
+                    tr_df["month"] = tr_df["date"].dt.to_period("M").astype(str)
+                    monthly = tr_df.groupby("month")["pnl_pct"].sum().reset_index()
+                    fig_monthly = px.bar(monthly, x="month", y="pnl_pct", color="pnl_pct", color_continuous_scale=["#e50914","#333","#00c853"], title="Monthly PnL (%)", template="plotly_dark", height=250)
+                    fig_monthly.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+                    st.plotly_chart(fig_monthly, use_container_width=True)
+                except Exception:
+                    pass
+            st.markdown("#### Signal Log")
+            st.dataframe(tr_df.tail(100).sort_values("date", ascending=False) if "date" in tr_df.columns else tr_df.tail(100), use_container_width=True)
+    except Exception as e:
+        st.warning(f"Track Record unavailable: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 14 — COMPLIANCE
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_compliance:
+    st.subheader("SEBI Compliance Dashboard")
+    st.caption("Algorithmic trading disclosure norms - SEBI circular SEBI/HO/MRD/MRD-DP/P/CIR/2021/1064.")
+    try:
+        from src.compliance_sebi import SEBIComplianceChecker
+        if st.button("Run Compliance Check", type="primary", key="comp_btn"):
+            with st.spinner("Running SEBI compliance checks..."):
+                try:
+                    checker = SEBIComplianceChecker()
+                    report = checker.generate_report()
+                    st.session_state["comp_report"] = report
+                except Exception as e:
+                    st.error(f"Compliance check failed: {e}")
+        if "comp_report" in st.session_state:
+            report = st.session_state["comp_report"]
+            summary = report.get("summary", {})
+            cc1,cc2,cc3,cc4,cc5 = st.columns(5)
+            cc1.metric("Total Checks", summary.get("total", 0))
+            cc2.metric("Pass", summary.get("pass", 0))
+            cc3.metric("Fail", summary.get("fail", 0))
+            cc4.metric("Warn", summary.get("warn", 0))
+            cc5.metric("Compliance %", f"{summary.get('compliance_pct', 0):.1f}%")
+            gs1, gs2 = st.columns(2)
+            with gs1:
+                ks = report.get("kill_switch_status", "UNKNOWN")
+                st.metric("Kill Switch", ks, delta="ARMED" if ks=="ACTIVE" else "CHECK CONFIG", delta_color="normal" if ks=="ACTIVE" else "inverse")
+            with gs2:
+                otr = report.get("order_to_trade_ratio", 0.0)
+                fig_otr = go.Figure(go.Indicator(mode="gauge+number", value=float(otr), title={"text": "Order-to-Trade Ratio"}, gauge={"axis": {"range": [0, 10]}, "bar": {"color": "#2196f3"}, "steps": [{"range": [0, 5], "color": "rgba(0,200,83,0.3)"}, {"range": [5, 10], "color": "rgba(229,9,20,0.3)"}], "threshold": {"line": {"color":"red","width":3}, "thickness":0.75, "value":5}}))
+                fig_otr.update_layout(height=260, margin=dict(t=40,b=10,l=10,r=10))
+                st.plotly_chart(fig_otr, use_container_width=True)
+            st.markdown("#### Check Details")
+            checks = report.get("checks", [])
+            status_icon = {"PASS": "✅", "FAIL": "❌", "WARN": "⚠️"}
+            for chk in checks:
+                status = chk.get("status", "WARN")
+                icon = status_icon.get(status, "❓")
+                check_id  = chk.get("check_id", chk.get("id", "?"))
+                desc      = chk.get("description", chk.get("requirement", chk.get("category", "")))
+                with st.expander(f"{icon} [{check_id}] {desc[:70]}"):
+                    st.markdown(f"**Status:** {status}")
+                    st.markdown(f"**Evidence:** {chk.get('evidence','N/A')}")
+                    if chk.get("remediation") and chk["remediation"] != "No action required.":
+                        st.info(f"**Remediation:** {chk['remediation']}")
+            st.download_button("Download Compliance Report (JSON)", data=json.dumps(report, indent=2), file_name=f"sebi_compliance_{report.get('report_id','report')}.json", mime="application/json")
+    except Exception as e:
+        st.warning(f"Compliance module unavailable: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 15 — OBSERVABILITY
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_obs:
+    st.subheader("📡 Observability")
+    st.caption("Agent trace logs, latency percentiles, and Prometheus-style metrics.")
+    TRACE_LOG = Path(REPO_ROOT) / "logs" / "agent_traces.jsonl"
+    try:
+        if TRACE_LOG.exists():
+            trace_lines = TRACE_LOG.read_text(encoding="utf-8").strip().splitlines()
+            trace_records = []
+            for ln in trace_lines:
+                try:
+                    trace_records.append(json.loads(ln))
+                except Exception:
+                    pass
+            if trace_records:
+                df_tr = pd.DataFrame(trace_records)
+                df_tr["timestamp"] = pd.to_datetime(df_tr.get("timestamp",""), errors="coerce")
+                df_tr["duration"] = pd.to_numeric(df_tr.get("duration_seconds", df_tr.get("duration",0)), errors="coerce").fillna(0)
+                ob1,ob2,ob3 = st.columns(3)
+                ob1.metric("Total Runs", len(df_tr))
+                ob2.metric("Error Rate", f"{(df_tr.get('error','').notna() & (df_tr.get('error','')!='')).mean()*100:.1f}%" if "error" in df_tr else "0%")
+                ob3.metric("Avg Latency", f"{df_tr['duration'].mean():.2f}s")
+                if "agent_name" in df_tr.columns:
+                    freq = df_tr["agent_name"].value_counts().reset_index()
+                    freq.columns = ["agent","count"]
+                    fig_freq = go.Figure(go.Bar(x=freq["agent"], y=freq["count"], marker_color="#2196f3"))
+                    fig_freq.update_layout(template="plotly_dark", height=280, title="Agent Run Frequency", margin=dict(l=0,r=0,t=40,b=0))
+                    st.plotly_chart(fig_freq, use_container_width=True)
+                if df_tr["duration"].max() > 0:
+                    fig_lat = go.Figure()
+                    if "agent_name" in df_tr.columns:
+                        for agent_n in df_tr["agent_name"].unique():
+                            subset = df_tr[df_tr["agent_name"]==agent_n]["duration"]
+                            fig_lat.add_trace(go.Box(y=subset, name=agent_n, boxpoints="outliers"))
+                    else:
+                        fig_lat.add_trace(go.Box(y=df_tr["duration"], name="All agents"))
+                    fig_lat.update_layout(template="plotly_dark", height=300, title="Latency Distribution (seconds)", margin=dict(l=0,r=0,t=40,b=0))
+                    st.plotly_chart(fig_lat, use_container_width=True)
+                total_runs = len(df_tr)
+                agent_counts = df_tr["agent_name"].value_counts().to_dict() if "agent_name" in df_tr else {}
+                p99 = float(df_tr["duration"].quantile(0.99)) if not df_tr["duration"].empty else 0
+                p50 = float(df_tr["duration"].quantile(0.50)) if not df_tr["duration"].empty else 0
+                prom_lines = [
+                    "# HELP alphaengine_copilot_runs_total Total agent runs",
+                    f"alphaengine_copilot_runs_total {total_runs}",
+                    "# HELP alphaengine_copilot_latency_p50_seconds p50 latency",
+                    f"alphaengine_copilot_latency_p50_seconds {p50:.4f}",
+                    "# HELP alphaengine_copilot_latency_p99_seconds p99 latency",
+                    f"alphaengine_copilot_latency_p99_seconds {p99:.4f}",
+                ]
+                for agent_n2, count in agent_counts.items():
+                    prom_lines.append(f'alphaengine_copilot_agent_runs_total{{agent="{agent_n2}"}} {count}')
+                st.markdown("#### Prometheus Metrics")
+                st.code("\n".join(prom_lines), language="text")
+                st.markdown("#### Recent Traces")
+                display_cols = [c for c in ["timestamp","agent_name","ticker","duration","error"] if c in df_tr.columns]
+                st.dataframe(df_tr[display_cols].tail(20).iloc[::-1], use_container_width=True)
+            else:
+                st.info("Trace log is empty. Generate traces via the AI Narrative or Research Copilot tabs.")
+        else:
+            st.info("No trace log found at logs/agent_traces.jsonl.")
+    except Exception as e:
+        st.warning(f"Observability tab error: {e}")
+
