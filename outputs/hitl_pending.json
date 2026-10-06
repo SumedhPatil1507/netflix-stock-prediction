@@ -1,0 +1,12 @@
+{
+  "sig1": {
+    "signal_id": "sig1",
+    "ticker": "NFLX",
+    "signal": "BUY",
+    "position_value": 15000,
+    "strategy_name": "nflx_momentum",
+    "status": "pending",
+    "requires_hitl": true,
+    "created_at": "2026-10-06T12:34:51.942570"
+  }
+}
