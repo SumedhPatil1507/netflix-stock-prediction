@@ -5,6 +5,16 @@ import numpy as np
 import os, sys, json
 from pathlib import Path
 
+try:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from src.branding_config import get_branding, TenantIsolation
+    _brand = get_branding()
+    APP_NAME = _brand.app_name
+    PRIMARY_COLOR = _brand.primary_color
+except Exception:
+    APP_NAME = "Alpha Engine Pro"
+    PRIMARY_COLOR = "#e50914"
+
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
@@ -18,7 +28,7 @@ from src.feature_utils import build_prediction_row
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="NFLX Alpha Engine",
+    page_title=APP_NAME,
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -102,7 +112,7 @@ df_live   = load_live_ohlcv(ticker, "2y")
 df_source = df_live if df_live is not None else df_feat[["Open","High","Low","Close","Volume"]]
 
 # ── Hero header ───────────────────────────────────────────────────────────────
-st.markdown('<p class="hero-title">Alpha Engine</p>', unsafe_allow_html=True)
+st.markdown(f'<p class="hero-title">{APP_NAME}</p>', unsafe_allow_html=True)
 st.caption(f"Real-time ML prediction · {ticker} · Backtesting · Sentiment · Risk · Drift Monitor")
 
 # ── KPI row ───────────────────────────────────────────────────────────────────
@@ -131,8 +141,15 @@ tabs = st.tabs([
     "🔍 Explainability",
     "🤖 AI Narrative",
     "🏗 Architecture",
+    "🧪 Strategy Lab",
+    "🔬 Research Copilot",
+    "📊 Track Record",
+    "⚖️ Compliance",
+    "📡 Observability",
 ])
-tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk, tab_drift, tab_shap, tab_narrative, tab_arch = tabs
+(tab_market, tab_pred, tab_bt, tab_paper, tab_sent, tab_risk,
+ tab_drift, tab_shap, tab_narrative, tab_arch,
+ tab_strategy, tab_copilot, tab_track, tab_compliance, tab_obs) = tabs
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — MARKET OVERVIEW (Candlestick + indicators)
@@ -1392,3 +1409,338 @@ Data Sources (multi-source)
 
 Run locally: `pytest tests/ -v`
     """)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 11 — STRATEGY LAB
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_strategy:
+    st.subheader("🧪 Strategy Lab")
+    st.caption("Define, run, and compare multi-ticker strategies side by side.")
+    try:
+        from src.strategy_registry import StrategyRegistry, StrategyConfig
+        _reg = StrategyRegistry()
+        _strategy_names = _reg.list_strategies()
+        col_run, col_compare = st.columns(2)
+        with col_run:
+            st.markdown("#### Run a Strategy")
+            sel_strategy = st.selectbox("Select strategy", _strategy_names, key="lab_sel")
+            if sel_strategy:
+                cfg = _reg.get(sel_strategy)
+                st.caption(cfg.description)
+                st.write(f"**Tickers:** {', '.join(cfg.tickers)}")
+                st.write(f"**Feature set:** {len(cfg.feature_set)} features")
+                src_sel = st.selectbox("Data source", ["csv", "yfinance"], key="lab_src")
+                if st.button("▶ Run Strategy", type="primary"):
+                    with st.spinner(f"Running {sel_strategy}..."):
+                        try:
+                            result = _reg.run_strategy(sel_strategy, source=src_sel)
+                            if "error" in result:
+                                st.error(result["error"])
+                            else:
+                                metrics = result.get("metrics", {})
+                                c1, c2, c3, c4 = st.columns(4)
+                                c1.metric("Ticker", result.get("ticker", "?"))
+                                c2.metric("CV R2", f"{metrics.get('CV_R2', metrics.get('R2', 0)):.4f}")
+                                c3.metric("Dir Acc", f"{metrics.get('Dir_Acc', 0):.1f}%")
+                                c4.metric("CV RMSE", f"{metrics.get('CV_RMSE', metrics.get('RMSE', 0)):.4f}")
+                        except Exception as e:
+                            st.error(f"Strategy run failed: {e}")
+        with col_compare:
+            st.markdown("#### Compare Strategies")
+            compare_sel = st.multiselect("Strategies to compare", _strategy_names, default=_strategy_names[:2], key="lab_cmp")
+            if st.button("Compare", type="secondary") and compare_sel:
+                with st.spinner("Comparing strategies..."):
+                    try:
+                        compare_results = _reg.compare_strategies(compare_sel, source="csv")
+                        rows = []
+                        for sname, res in compare_results.items():
+                            if "error" not in res:
+                                m = res.get("metrics", {})
+                                rows.append({"Strategy": sname, "Ticker": res.get("ticker", "?"), "R2": m.get("CV_R2", m.get("R2", 0)), "Dir Acc %": m.get("Dir_Acc", 0), "RMSE": m.get("CV_RMSE", m.get("RMSE", 0))})
+                        if rows:
+                            df_cmp = pd.DataFrame(rows)
+                            fig_cmp = go.Figure()
+                            for col_metric in ["R2", "Dir Acc %"]:
+                                fig_cmp.add_trace(go.Bar(name=col_metric, x=df_cmp["Strategy"], y=df_cmp[col_metric]))
+                            fig_cmp.update_layout(template="plotly_dark", barmode="group", height=350, title="Strategy Comparison", margin=dict(l=0,r=0,t=40,b=0))
+                            st.plotly_chart(fig_cmp, use_container_width=True)
+                            st.dataframe(df_cmp, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Comparison failed: {e}")
+        st.markdown("---")
+        st.markdown("#### Register New Strategy")
+        with st.expander("Define a new strategy"):
+            new_name = st.text_input("Strategy name", placeholder="my_strategy")
+            new_tickers = st.text_input("Tickers (comma-separated)", value="NFLX,AAPL")
+            new_fset = st.selectbox("Feature set", ["full", "momentum", "mean_reversion", "volume"])
+            new_desc = st.text_area("Description", height=80)
+            if st.button("Register Strategy") and new_name:
+                try:
+                    from src.strategy_registry import _MOMENTUM_FEATURES, _MEAN_REVERSION_FEATURES, _FULL_FEATURES
+                    fset_map = {"full": _FULL_FEATURES, "momentum": _MOMENTUM_FEATURES, "mean_reversion": _MEAN_REVERSION_FEATURES, "volume": _MOMENTUM_FEATURES}
+                    new_cfg = StrategyConfig(name=new_name, tickers=[t.strip() for t in new_tickers.split(",") if t.strip()], feature_set=fset_map[new_fset], description=new_desc)
+                    _reg.register(new_cfg)
+                    st.success(f"Strategy '{new_name}' registered!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Registration failed: {e}")
+    except Exception as e:
+        st.warning(f"Strategy Lab unavailable: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 12 — RESEARCH COPILOT
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_copilot:
+    st.subheader("🔬 Research Copilot")
+    st.caption("AI-powered research notes with HITL approval gate and citation-backed analysis.")
+    try:
+        from src.copilot import CopilotGraph
+        from src.copilot.hitl_router import HITLRouter
+        cop_col1, cop_col2, cop_col3 = st.columns(3)
+        cop_ticker = cop_col1.text_input("Ticker", value=ticker, key="cop_ticker").upper()
+        cop_price = cop_col2.number_input("Current Price ($)", value=float(df_source["Close"].iloc[-1]) if not df_source.empty else 650.0, key="cop_price")
+        cop_query = cop_col3.text_input("Custom query (optional)", placeholder="Why is the model bullish?", key="cop_query")
+        cop_pos_val = st.number_input("Proposed Position Value ($)", value=5000.0, step=1000.0, key="cop_pos")
+        if st.button("Generate Research Note", type="primary", key="cop_btn"):
+            with st.spinner("Running Copilot pipeline (retrieve -> tool -> write -> HITL)..."):
+                try:
+                    _copilot = CopilotGraph(ticker=cop_ticker)
+                    cop_result = _copilot.run(ticker=cop_ticker, query=cop_query or None, position_value=cop_pos_val)
+                    st.session_state["cop_result"] = cop_result
+                except Exception as e:
+                    st.error(f"Copilot error: {e}")
+        if "cop_result" in st.session_state:
+            cop_result = st.session_state["cop_result"]
+            tool_state = cop_result.get("tool_state", {})
+            hitl = cop_result.get("hitl_result", {})
+            if hitl.get("requires_hitl"):
+                st.warning(f"HITL Required - Position value exceeds threshold. Signal ID: {hitl.get('signal_id','?')}")
+                hcol1, hcol2 = st.columns(2)
+                if hcol1.button("Approve Signal", key="hitl_approve"):
+                    HITLRouter().approve(hitl.get("signal_id",""), approver=st.session_state.get("username","analyst"))
+                    st.success("Signal approved!")
+                if hcol2.button("Reject Signal", key="hitl_reject"):
+                    HITLRouter().reject(hitl.get("signal_id",""), reason="Manual rejection")
+                    st.error("Signal rejected.")
+            else:
+                st.success("Signal auto-approved (below HITL threshold)")
+            pred_ret = tool_state.get("pred_return", 0.0) or 0.0
+            ci_l = tool_state.get("ci_lower", pred_ret - 0.5)
+            ci_u = tool_state.get("ci_upper", pred_ret + 0.5)
+            gc1, gc2 = st.columns(2)
+            with gc1:
+                fig_gauge = go.Figure(go.Indicator(mode="gauge+number", value=float(pred_ret)*100, title={"text": "Predicted Return (%)"}, gauge={"axis": {"range": [-3, 3]}, "bar": {"color": "#00c853" if pred_ret >= 0 else "#e50914"}, "steps": [{"range": [-3, 0], "color": "rgba(229,9,20,0.2)"}, {"range": [0, 3], "color": "rgba(0,200,83,0.2)"}]}))
+                fig_gauge.update_layout(height=280, margin=dict(t=40,b=10,l=10,r=10))
+                st.plotly_chart(fig_gauge, use_container_width=True)
+            with gc2:
+                fig_ci = go.Figure(go.Scatter(x=[float(pred_ret)*100], y=[0], mode="markers", marker=dict(size=16, color="#2196f3"), error_x=dict(type="data", symmetric=False, minus=abs(float(pred_ret)-float(ci_l))*100, plus=abs(float(ci_u)-float(pred_ret))*100, visible=True, color="#2196f3", thickness=4, width=10), name="Prediction +/- CI"))
+                fig_ci.update_layout(title="Conformal Prediction Interval", xaxis_title="Return (%)", yaxis=dict(showticklabels=False), height=280, margin=dict(t=40,b=40,l=10,r=10))
+                st.plotly_chart(fig_ci, use_container_width=True)
+            rm1, rm2, rm3, rm4, rm5 = st.columns(5)
+            rm1.metric("Signal", tool_state.get("signal", "N/A"))
+            rm2.metric("Stop Loss", f"${tool_state.get('stop_loss', 0):.2f}" if tool_state.get("stop_loss") else "N/A")
+            rm3.metric("Take Profit", f"${tool_state.get('take_profit', 0):.2f}" if tool_state.get("take_profit") else "N/A")
+            rm4.metric("Kelly Frac", f"{tool_state.get('kelly_fraction', 0):.3f}")
+            rm5.metric("Position ($)", f"${cop_pos_val:,.0f}")
+            shap_drivers = tool_state.get("shap_drivers", [])
+            if shap_drivers:
+                st.markdown("#### Top Feature Drivers")
+                feats = [d.get("feature","?") for d in shap_drivers]
+                imps = [d.get("importance", 0) for d in shap_drivers]
+                colors = ["#00c853" if d.get("direction","") == "positive" else "#e50914" for d in shap_drivers]
+                fig_shap_c = go.Figure(go.Bar(x=imps, y=feats, orientation="h", marker_color=colors))
+                fig_shap_c.update_layout(template="plotly_dark", height=250, title="SHAP Feature Importance", margin=dict(l=0,r=0,t=40,b=0))
+                st.plotly_chart(fig_shap_c, use_container_width=True)
+            st.markdown("### Research Note")
+            st.markdown(cop_result.get("note", "No note generated."))
+            docs = cop_result.get("retrieval", {}).get("documents", [])
+            if docs:
+                st.markdown(f"**Sources used:** {len(docs)}")
+                titles = [d.get("metadata",{}).get("title","Doc")[:40] for d in docs]
+                dists = [1-(d.get("distance",0.5) or 0.5) for d in docs]
+                fig_src = go.Figure(go.Bar(x=dists, y=titles, orientation="h", marker_color="#ffd700"))
+                fig_src.update_layout(template="plotly_dark", height=200, title="Source Relevance", margin=dict(l=0,r=0,t=30,b=0))
+                st.plotly_chart(fig_src, use_container_width=True)
+                with st.expander("View source documents"):
+                    for i, d in enumerate(docs, 1):
+                        st.markdown(f"**[{i}] {d.get('metadata',{}).get('title','?')}** - {d.get('metadata',{}).get('date','?')}")
+                        st.markdown(f"> {d.get('text','')[:200]}...")
+            method = "Groq LLaMA3" if "groq" in str(cop_result.get("note","")).lower() else "Rule-based fallback"
+            st.caption(f"Generation method: {method} · Sources: {cop_result.get('sources_used',0)}")
+    except Exception as e:
+        st.warning(f"Research Copilot unavailable: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 13 — TRACK RECORD
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_track:
+    st.subheader("📊 Track Record")
+    st.caption("Verifiable, timestamped signal log with institutional-grade performance metrics.")
+    try:
+        from src.track_record import TrackRecord
+        from src.strategy_registry import StrategyRegistry
+        tr_strategies = StrategyRegistry().list_strategies()
+        tr_sel = st.selectbox("Strategy", tr_strategies, key="tr_sel")
+        tr = TrackRecord(strategy_name=tr_sel)
+        tr_df = tr.load()
+        if tr_df.empty:
+            st.info("No track record data yet. Run: python src/track_record_seeder.py")
+            if st.button("Seed Track Record Data"):
+                with st.spinner("Seeding..."):
+                    try:
+                        from src.track_record_seeder import seed_all
+                        seed_all()
+                        st.success("Seeded!")
+                        st.rerun()
+                    except Exception as seed_e:
+                        st.error(f"Seed error: {seed_e}")
+        else:
+            metrics = tr.compute_metrics()
+            equity = tr.get_equity_curve()
+            dd = tr.get_drawdown_series()
+            k1,k2,k3,k4,k5,k6,k7 = st.columns(7)
+            k1.metric("Signals", metrics["n_signals"])
+            k2.metric("Win Rate", f"{metrics['win_rate_pct']:.1f}%")
+            k3.metric("Sharpe", f"{metrics['sharpe']:.2f}")
+            k4.metric("Sortino", f"{metrics['sortino']:.2f}")
+            k5.metric("Calmar", f"{metrics['calmar']:.2f}")
+            k6.metric("Max DD", f"{metrics['max_drawdown']*100:.1f}%")
+            k7.metric("Profit Fac.", f"{metrics['profit_factor']:.2f}")
+            fig_eq = go.Figure(go.Scatter(y=equity.values, mode="lines", line=dict(color="#00c853", width=2), fill="tozeroy", fillcolor="rgba(0,200,83,0.1)", name="Cumulative PnL %"))
+            fig_eq.add_hline(y=0, line_color="white", opacity=0.3)
+            fig_eq.update_layout(template="plotly_dark", height=300, title="Equity Curve (Cumulative PnL %)", margin=dict(l=0,r=0,t=40,b=0))
+            st.plotly_chart(fig_eq, use_container_width=True)
+            fig_dd = go.Figure(go.Scatter(y=dd.values*100, mode="lines", fill="tozeroy", fillcolor="rgba(229,9,20,0.3)", line=dict(color="#e50914", width=1), name="Drawdown %"))
+            fig_dd.update_layout(template="plotly_dark", height=200, title="Drawdown (%)", margin=dict(l=0,r=0,t=40,b=0))
+            st.plotly_chart(fig_dd, use_container_width=True)
+            if "date" in tr_df.columns and len(tr_df) >= 10:
+                try:
+                    tr_df["date"] = pd.to_datetime(tr_df["date"], errors="coerce")
+                    tr_df["month"] = tr_df["date"].dt.to_period("M").astype(str)
+                    monthly = tr_df.groupby("month")["pnl_pct"].sum().reset_index()
+                    fig_monthly = px.bar(monthly, x="month", y="pnl_pct", color="pnl_pct", color_continuous_scale=["#e50914","#333","#00c853"], title="Monthly PnL (%)", template="plotly_dark", height=250)
+                    fig_monthly.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+                    st.plotly_chart(fig_monthly, use_container_width=True)
+                except Exception:
+                    pass
+            st.markdown("#### Signal Log")
+            st.dataframe(tr_df.tail(100).sort_values("date", ascending=False) if "date" in tr_df.columns else tr_df.tail(100), use_container_width=True)
+    except Exception as e:
+        st.warning(f"Track Record unavailable: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 14 — COMPLIANCE
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_compliance:
+    st.subheader("SEBI Compliance Dashboard")
+    st.caption("Algorithmic trading disclosure norms - SEBI circular SEBI/HO/MRD/MRD-DP/P/CIR/2021/1064.")
+    try:
+        from src.compliance_sebi import SEBIComplianceChecker
+        if st.button("Run Compliance Check", type="primary", key="comp_btn"):
+            with st.spinner("Running SEBI compliance checks..."):
+                try:
+                    checker = SEBIComplianceChecker()
+                    report = checker.generate_report()
+                    st.session_state["comp_report"] = report
+                except Exception as e:
+                    st.error(f"Compliance check failed: {e}")
+        if "comp_report" in st.session_state:
+            report = st.session_state["comp_report"]
+            summary = report.get("summary", {})
+            cc1,cc2,cc3,cc4,cc5 = st.columns(5)
+            cc1.metric("Total Checks", summary.get("total", 0))
+            cc2.metric("Pass", summary.get("pass", 0))
+            cc3.metric("Fail", summary.get("fail", 0))
+            cc4.metric("Warn", summary.get("warn", 0))
+            cc5.metric("Compliance %", f"{summary.get('compliance_pct', 0):.1f}%")
+            gs1, gs2 = st.columns(2)
+            with gs1:
+                ks = report.get("kill_switch_status", "UNKNOWN")
+                st.metric("Kill Switch", ks, delta="ARMED" if ks=="ACTIVE" else "CHECK CONFIG", delta_color="normal" if ks=="ACTIVE" else "inverse")
+            with gs2:
+                otr = report.get("order_to_trade_ratio", 0.0)
+                fig_otr = go.Figure(go.Indicator(mode="gauge+number", value=float(otr), title={"text": "Order-to-Trade Ratio"}, gauge={"axis": {"range": [0, 10]}, "bar": {"color": "#2196f3"}, "steps": [{"range": [0, 5], "color": "rgba(0,200,83,0.3)"}, {"range": [5, 10], "color": "rgba(229,9,20,0.3)"}], "threshold": {"line": {"color":"red","width":3}, "thickness":0.75, "value":5}}))
+                fig_otr.update_layout(height=260, margin=dict(t=40,b=10,l=10,r=10))
+                st.plotly_chart(fig_otr, use_container_width=True)
+            st.markdown("#### Check Details")
+            checks = report.get("checks", [])
+            status_icon = {"PASS": "Pass", "FAIL": "FAIL", "WARN": "WARN"}
+            for chk in checks:
+                status = chk.get("status", "WARN")
+                icon = status_icon.get(status, "?")
+                with st.expander(f"{icon} [{chk.get('id','')}] {chk.get('category','')} - {chk.get('requirement','')[:60]}"):
+                    st.markdown(f"**Status:** {status}")
+                    st.markdown(f"**Regulation:** {chk.get('regulation_ref','N/A')}")
+                    st.markdown(f"**Evidence:** {chk.get('evidence','N/A')}")
+                    if chk.get("remediation"):
+                        st.info(f"**Remediation:** {chk['remediation']}")
+            st.download_button("Download Compliance Report (JSON)", data=json.dumps(report, indent=2), file_name=f"sebi_compliance_{report.get('report_id','report')}.json", mime="application/json")
+    except Exception as e:
+        st.warning(f"Compliance module unavailable: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 15 — OBSERVABILITY
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_obs:
+    st.subheader("📡 Observability")
+    st.caption("Agent trace logs, latency percentiles, and Prometheus-style metrics.")
+    TRACE_LOG = Path(REPO_ROOT) / "logs" / "agent_traces.jsonl"
+    try:
+        if TRACE_LOG.exists():
+            trace_lines = TRACE_LOG.read_text(encoding="utf-8").strip().splitlines()
+            trace_records = []
+            for ln in trace_lines:
+                try:
+                    trace_records.append(json.loads(ln))
+                except Exception:
+                    pass
+            if trace_records:
+                df_tr = pd.DataFrame(trace_records)
+                df_tr["timestamp"] = pd.to_datetime(df_tr.get("timestamp",""), errors="coerce")
+                df_tr["duration"] = pd.to_numeric(df_tr.get("duration_seconds", df_tr.get("duration",0)), errors="coerce").fillna(0)
+                ob1,ob2,ob3 = st.columns(3)
+                ob1.metric("Total Runs", len(df_tr))
+                ob2.metric("Error Rate", f"{(df_tr.get('error','').notna() & (df_tr.get('error','')!='')).mean()*100:.1f}%" if "error" in df_tr else "0%")
+                ob3.metric("Avg Latency", f"{df_tr['duration'].mean():.2f}s")
+                if "agent_name" in df_tr.columns:
+                    freq = df_tr["agent_name"].value_counts().reset_index()
+                    freq.columns = ["agent","count"]
+                    fig_freq = go.Figure(go.Bar(x=freq["agent"], y=freq["count"], marker_color="#2196f3"))
+                    fig_freq.update_layout(template="plotly_dark", height=280, title="Agent Run Frequency", margin=dict(l=0,r=0,t=40,b=0))
+                    st.plotly_chart(fig_freq, use_container_width=True)
+                if df_tr["duration"].max() > 0:
+                    fig_lat = go.Figure()
+                    if "agent_name" in df_tr.columns:
+                        for agent_n in df_tr["agent_name"].unique():
+                            subset = df_tr[df_tr["agent_name"]==agent_n]["duration"]
+                            fig_lat.add_trace(go.Box(y=subset, name=agent_n, boxpoints="outliers"))
+                    else:
+                        fig_lat.add_trace(go.Box(y=df_tr["duration"], name="All agents"))
+                    fig_lat.update_layout(template="plotly_dark", height=300, title="Latency Distribution (seconds)", margin=dict(l=0,r=0,t=40,b=0))
+                    st.plotly_chart(fig_lat, use_container_width=True)
+                total_runs = len(df_tr)
+                agent_counts = df_tr["agent_name"].value_counts().to_dict() if "agent_name" in df_tr else {}
+                p99 = float(df_tr["duration"].quantile(0.99)) if not df_tr["duration"].empty else 0
+                p50 = float(df_tr["duration"].quantile(0.50)) if not df_tr["duration"].empty else 0
+                prom_lines = [
+                    "# HELP alphaengine_copilot_runs_total Total agent runs",
+                    f"alphaengine_copilot_runs_total {total_runs}",
+                    "# HELP alphaengine_copilot_latency_p50_seconds p50 latency",
+                    f"alphaengine_copilot_latency_p50_seconds {p50:.4f}",
+                    "# HELP alphaengine_copilot_latency_p99_seconds p99 latency",
+                    f"alphaengine_copilot_latency_p99_seconds {p99:.4f}",
+                ]
+                for agent_n2, count in agent_counts.items():
+                    prom_lines.append(f'alphaengine_copilot_agent_runs_total{{agent="{agent_n2}"}} {count}')
+                st.markdown("#### Prometheus Metrics")
+                st.code("\n".join(prom_lines), language="text")
+                st.markdown("#### Recent Traces")
+                display_cols = [c for c in ["timestamp","agent_name","ticker","duration","error"] if c in df_tr.columns]
+                st.dataframe(df_tr[display_cols].tail(20).iloc[::-1], use_container_width=True)
+            else:
+                st.info("Trace log is empty. Generate traces via the AI Narrative or Research Copilot tabs.")
+        else:
+            st.info("No trace log found at logs/agent_traces.jsonl.")
+    except Exception as e:
+        st.warning(f"Observability tab error: {e}")
+
