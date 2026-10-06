@@ -186,8 +186,10 @@ class SEBIComplianceChecker:
         Returns
         -------
         dict with keys:
-            ``generated_at`` (ISO str), ``overall_status`` ("PASS" | "FAIL"),
-            ``summary`` (str), ``checks`` (list[dict]).
+            ``report_id``, ``generated_at``, ``overall_status``,
+            ``summary`` (dict with total/pass/fail/warn/compliance_pct),
+            ``checks`` (list[dict]), ``kill_switch_status`` (str),
+            ``order_to_trade_ratio`` (float), ``audit_trail_path`` (str).
         """
         checks: list[dict[str, Any]] = [
             self._check_audit_trail(),
@@ -201,18 +203,36 @@ class SEBIComplianceChecker:
         ]
 
         statuses = [c["status"] for c in checks]
-        overall = "PASS" if all(s == "PASS" for s in statuses) else "FAIL"
+        n_pass = sum(1 for s in statuses if s == "PASS")
+        n_fail = sum(1 for s in statuses if s == "FAIL")
+        n_warn = sum(1 for s in statuses if s == "WARN")
+        total  = len(checks)
+        overall = "PASS" if n_fail == 0 else "FAIL"
+        compliance_pct = round(n_pass / total * 100, 1) if total else 0.0
 
-        fail_ids = [c["check_id"] for c in checks if c["status"] != "PASS"]
-        summary = (
-            f"{sum(1 for s in statuses if s == 'PASS')}/{len(statuses)} checks passed."
-            + (f" Failed: {', '.join(fail_ids)}." if fail_ids else " All checks passed.")
-        )
+        ks_state = self.get_kill_switch_status()
+        kill_switch_status = "ACTIVE" if ks_state.get("active") else "INACTIVE"
+        otr = self.compute_order_to_trade_ratio()
+
+        import uuid
+        report_id = f"SEBI_ALGO_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:4]}"
 
         return {
+            "report_id": report_id,
             "generated_at": datetime.now().isoformat(),
+            "system": "Alpha Engine Pro",
+            "version": "2.0.0",
             "overall_status": overall,
-            "summary": summary,
+            "kill_switch_status": kill_switch_status,
+            "order_to_trade_ratio": otr,
+            "audit_trail_path": self.audit_log_path,
+            "summary": {
+                "total": total,
+                "pass": n_pass,
+                "fail": n_fail,
+                "warn": n_warn,
+                "compliance_pct": compliance_pct,
+            },
             "checks": checks,
         }
 

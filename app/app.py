@@ -1664,15 +1664,16 @@ with tab_compliance:
                 st.plotly_chart(fig_otr, use_container_width=True)
             st.markdown("#### Check Details")
             checks = report.get("checks", [])
-            status_icon = {"PASS": "Pass", "FAIL": "FAIL", "WARN": "WARN"}
+            status_icon = {"PASS": "✅", "FAIL": "❌", "WARN": "⚠️"}
             for chk in checks:
                 status = chk.get("status", "WARN")
-                icon = status_icon.get(status, "?")
-                with st.expander(f"{icon} [{chk.get('id','')}] {chk.get('category','')} - {chk.get('requirement','')[:60]}"):
+                icon = status_icon.get(status, "❓")
+                check_id  = chk.get("check_id", chk.get("id", "?"))
+                desc      = chk.get("description", chk.get("requirement", chk.get("category", "")))
+                with st.expander(f"{icon} [{check_id}] {desc[:70]}"):
                     st.markdown(f"**Status:** {status}")
-                    st.markdown(f"**Regulation:** {chk.get('regulation_ref','N/A')}")
                     st.markdown(f"**Evidence:** {chk.get('evidence','N/A')}")
-                    if chk.get("remediation"):
+                    if chk.get("remediation") and chk["remediation"] != "No action required.":
                         st.info(f"**Remediation:** {chk['remediation']}")
             st.download_button("Download Compliance Report (JSON)", data=json.dumps(report, indent=2), file_name=f"sebi_compliance_{report.get('report_id','report')}.json", mime="application/json")
     except Exception as e:
