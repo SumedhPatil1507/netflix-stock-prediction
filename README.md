@@ -69,6 +69,7 @@ python main.py --source csv --ticker NFLX
 The API provides prediction, risk, and execution routes, plus bearer-authenticated SSE streams. Configure secrets in an untracked `.env` file; start Redis for Pub/Sub features.
 
 ```bash
+python -m pip install -r requirements-api.txt
 Copy-Item .env.example .env  # Windows PowerShell; edit the values before starting
 python -m uvicorn api.main:app --reload
 ```
@@ -91,6 +92,8 @@ Publish market updates as JSON to Redis channel `alpha:stream:{SYMBOL}`. Include
 - `src/streaming/kafka_consumer.py` consumes normalized Kafka events and writes OFI, VWAP, spread, and micro-slippage features to Redis.
 - The Kafka producer/market-data bridge must normalize its event format. Alpaca's stock websocket provides trades and best quotes; full market depth requires a data source that supplies L2 snapshots.
 
+Install the online feature services with `python -m pip install -r requirements-streaming.txt`. Feast/Kafka/Redis are separate from the Streamlit dashboard install so hosted charts do not need those services.
+
 ## Project map
 
 ```text
@@ -111,7 +114,7 @@ tests/                        Unit and API tests
 python -m pytest tests/ -q
 ```
 
-The Streamlit dashboard and FastAPI are separate processes. Redis and Kafka are only needed for online streaming and Pub/Sub features; the local dashboard and offline backtest can run without them.
+The dashboard, API, and streaming worker use separate dependency groups. The root `requirements.txt` is sized for Streamlit Cloud and offline analytics. Install `requirements-api.txt` for FastAPI, SSE, JWT, and Redis Pub/Sub; install `requirements-streaming.txt` for Feast, Kafka, and the Redis online feature path. Redis and Kafka services are only needed for online features.
 
 ## License
 
