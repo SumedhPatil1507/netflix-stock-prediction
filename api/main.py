@@ -13,15 +13,38 @@ import os
 import sys
 import json
 import logging
+import asyncio
+import time
+from functools import wraps
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
 
 import joblib
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
+
+try:
+    from sse_starlette.sse import EventSourceResponse
+except ImportError:
+    EventSourceResponse = None
+
+try:
+    from opentelemetry import trace
+    _tracer = trace.get_tracer("alpha-engine.api")
+except ImportError:
+    trace = None
+    _tracer = None
+
+try:
+    from jose import JWTError, jwt
+except ImportError:
+    JWTError = Exception
+    jwt = None
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
@@ -46,6 +69,147 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl=os.getenv("OAUTH2_TOKEN_URL", "/oauth/token"))
+_redis = None
+
+
+def _span(name: str):
+    """Return an OpenTelemetry span, or a no-op context if telemetry is absent."""
+    if _tracer is not None:
+        return _tracer.start_as_current_span(name)
+    from contextlib import nullcontext
+    return nullcontext()
+
+
+def traced(name: str):
+    def decorate(func):
+        @wraps(func)
+        def wrapped(*args, **kwargs):
+            with _span(name):
+                return func(*args, **kwargs)
+        return wrapped
+    return decorate
+
+
+def _jwt_settings(*, signing: bool = False):
+    algorithm = os.getenv("API_JWT_ALGORITHM", "HS256")
+    if algorithm not in {"HS256", "RS256", "RS384", "RS512"}:
+        raise HTTPException(status_code=503, detail="Unsupported JWT signing algorithm")
+    if algorithm.startswith("RS"):
+        key = os.getenv("API_JWT_PRIVATE_KEY" if signing else "API_JWT_PUBLIC_KEY")
+    else:
+        key = os.getenv("API_JWT_SECRET")
+    if not key or (algorithm == "HS256" and len(key) < 32):
+        raise HTTPException(status_code=503, detail="JWT verification is not configured securely")
+    return key, algorithm
+
+
+def _password_matches(password: str, encoded: str) -> bool:
+    import hashlib
+    import hmac
+    try:
+        salt, expected = encoded.split("$", 1)
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 310_000).hex()
+        return hmac.compare_digest(actual, expected)
+    except (ValueError, AttributeError):
+        return False
+
+
+def _current_user(token: str = Depends(oauth2_scheme)) -> dict:
+    if jwt is None:
+        raise HTTPException(status_code=503, detail="Install python-jose to enable JWT authentication")
+    key, algorithm = _jwt_settings()
+    try:
+        options = {"verify_aud": bool(os.getenv("API_JWT_AUDIENCE"))}
+        claims = jwt.decode(token, key, algorithms=[algorithm],
+                            issuer=os.getenv("API_JWT_ISSUER") or None,
+                            audience=os.getenv("API_JWT_AUDIENCE") or None,
+                            options=options)
+    except JWTError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired bearer token",
+                            headers={"WWW-Authenticate": "Bearer"}) from exc
+    roles = claims.get("roles", [])
+    if isinstance(roles, str):
+        roles = roles.split()
+    if not isinstance(roles, list) or not set(roles).issubset({"trader", "risk_analyst", "admin"}):
+        raise HTTPException(status_code=403, detail="Token has invalid role claims")
+    return {"subject": claims.get("sub"), "roles": roles, "claims": claims}
+
+
+def require_roles(*allowed_roles: str):
+    def dependency(user: dict = Depends(_current_user)) -> dict:
+        if "admin" not in user["roles"] and not set(user["roles"]).intersection(allowed_roles):
+            raise HTTPException(status_code=403, detail="Insufficient role")
+        return user
+    return dependency
+
+
+def _configured_users() -> dict:
+    try:
+        users = json.loads(os.getenv("API_USERS_JSON", "{}"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="API_USERS_JSON must be valid JSON") from exc
+    return users if isinstance(users, dict) else {}
+
+
+@app.post("/oauth/token")
+def issue_access_token(form: OAuth2PasswordRequestForm = Depends()):
+    """Issue a short-lived JWT for a configured service user (PBKDF2 password hashes)."""
+    if jwt is None:
+        raise HTTPException(status_code=503, detail="Install python-jose to enable JWT authentication")
+    key, algorithm = _jwt_settings(signing=True)
+    user = _configured_users().get(form.username)
+    if not user or not _password_matches(form.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Incorrect username or password",
+                            headers={"WWW-Authenticate": "Bearer"})
+    roles = user.get("roles", [])
+    if not roles or not set(roles).issubset({"trader", "risk_analyst", "admin"}):
+        raise HTTPException(status_code=403, detail="Configured user has invalid roles")
+    from datetime import timedelta, timezone
+    now = datetime.now(timezone.utc)
+    claims = {"sub": form.username, "roles": roles,
+              "iat": int(now.timestamp()),
+              "exp": int((now + timedelta(minutes=30)).timestamp())}
+    if issuer := os.getenv("API_JWT_ISSUER"):
+        claims["iss"] = issuer
+    if audience := os.getenv("API_JWT_AUDIENCE"):
+        claims["aud"] = audience
+    return {"access_token": jwt.encode(claims, key, algorithm=algorithm), "token_type": "bearer",
+            "expires_in": 1800}
+
+
+async def _get_redis():
+    global _redis
+    if _redis is None:
+        try:
+            from redis.asyncio import Redis
+        except ImportError as exc:
+            raise HTTPException(status_code=503, detail="Install redis to enable live streams") from exc
+        _redis = Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True,
+                                socket_connect_timeout=0.1, socket_timeout=0.1,
+                                max_connections=int(os.getenv("REDIS_MAX_CONNECTIONS", "100")))
+    return _redis
+
+
+@app.on_event("shutdown")
+async def close_redis_client():
+    global _redis
+    if _redis is not None:
+        await _redis.aclose()
+        _redis = None
+
+
+async def publish_risk_event(event_type: str, payload: dict) -> float:
+    """Publish risk/circuit-breaker events and return publish latency in milliseconds."""
+    if event_type not in {"risk_metrics", "circuit_breaker"}:
+        raise ValueError("Unsupported risk event type")
+    started = time.perf_counter()
+    redis = await _get_redis()
+    event = {"type": event_type, "timestamp": datetime.utcnow().isoformat() + "Z", "payload": payload}
+    with _span("redis.publish.risk_event"):
+        await redis.publish(os.getenv("RISK_EVENTS_CHANNEL", "alpha:risk:events"), json.dumps(event))
+    return (time.perf_counter() - started) * 1000
 
 app.add_middleware(
     CORSMiddleware,
@@ -124,7 +288,8 @@ def tickers():
 
 
 @app.post("/predict", response_model=PredictResponse)
-def predict(request: PredictRequest, req: Request = None):
+@traced("model.inference")
+def predict(request: PredictRequest, user: dict = Depends(require_roles("trader", "risk_analyst"))):
     if _model is None:
         raise HTTPException(status_code=503,
                             detail="Model not loaded. Run python main.py first.")
@@ -147,12 +312,14 @@ def predict(request: PredictRequest, req: Request = None):
         if hasattr(_model, "conformal_"):
             cp = _model.conformal_
             lo_r, hi_r = cp.predict_interval(row)
+            nominal_coverage = 1.0 - float(getattr(cp, "alpha", 0.1))
             ci = {
                 "lower_return_pct": round(float(lo_r[0]), 4),
                 "upper_return_pct": round(float(hi_r[0]), 4),
                 "lower_price":      round(last_close * (1 + lo_r[0] / 100), 2),
                 "upper_price":      round(last_close * (1 + hi_r[0] / 100), 2),
-                "coverage":         "90%",
+                "coverage":         f"{nominal_coverage:.0%}",
+                "nominal_coverage": nominal_coverage,
             }
 
         return PredictResponse(
@@ -165,6 +332,84 @@ def predict(request: PredictRequest, req: Request = None):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/stream/predictions/{symbol}")
+async def stream_predictions(symbol: str, user: dict = Depends(require_roles("trader", "risk_analyst"))):
+    """Stream Redis price events and predictions with calibrated conformal intervals.
+
+    The market-data publisher should send JSON on ``alpha:stream:{SYMBOL}``.
+    Events with a ``rows`` field (last ten or more OHLCV rows) trigger inference;
+    every event is also forwarded as a price/update event.
+    """
+    if EventSourceResponse is None:
+        raise HTTPException(status_code=503, detail="Install sse-starlette to enable SSE")
+    ticker = symbol.upper()
+    redis = await _get_redis()
+
+    async def events():
+        pubsub = redis.pubsub()
+        await pubsub.subscribe(f"alpha:stream:{ticker}")
+        try:
+            yield {"event": "connected", "data": json.dumps({"symbol": ticker})}
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message is None:
+                    await asyncio.sleep(0.01)
+                    continue
+                try:
+                    update = json.loads(message["data"])
+                except (TypeError, json.JSONDecodeError):
+                    logger.warning("Discarding malformed market update for %s", ticker)
+                    continue
+                yield {"event": "price", "data": json.dumps({"symbol": ticker, **update}, default=str)}
+                rows = update.get("rows")
+                if not rows or _model is None:
+                    continue
+                try:
+                    request = PredictRequest(rows=[OHLCVRow(**row) for row in rows], ticker=ticker)
+                    prediction = await asyncio.to_thread(predict, request)
+                    result = prediction.dict()
+                    ci = result.get("confidence_interval") or {}
+                    conformal = getattr(_model, "conformal_", None)
+                    result["nominal_coverage"] = (1.0 - float(getattr(conformal, "alpha", 0.1))) if conformal else None
+                    result["coverage_interval"] = ci
+                    yield {"event": "prediction", "data": json.dumps(result, default=str)}
+                except Exception:
+                    logger.exception("Streaming inference failed for %s", ticker)
+                    yield {"event": "error", "data": json.dumps({"symbol": ticker,
+                                                                       "detail": "Inference unavailable"})}
+        finally:
+            await pubsub.unsubscribe(f"alpha:stream:{ticker}")
+            await pubsub.aclose()
+
+    return EventSourceResponse(events(), ping=15, send_timeout=5)
+
+
+@app.get("/api/v1/stream/risk")
+async def stream_risk_events(user: dict = Depends(require_roles("risk_analyst"))):
+    """Stream risk metrics and circuit-breaker broadcasts from Redis Pub/Sub."""
+    if EventSourceResponse is None:
+        raise HTTPException(status_code=503, detail="Install sse-starlette to enable SSE")
+    redis = await _get_redis()
+
+    async def events():
+        pubsub = redis.pubsub()
+        channel = os.getenv("RISK_EVENTS_CHANNEL", "alpha:risk:events")
+        await pubsub.subscribe(channel)
+        try:
+            yield {"event": "connected", "data": json.dumps({"channel": channel})}
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message is None:
+                    await asyncio.sleep(0.01)
+                    continue
+                yield {"event": "risk", "data": str(message["data"])}
+        finally:
+            await pubsub.unsubscribe(channel)
+            await pubsub.aclose()
+
+    return EventSourceResponse(events(), ping=15, send_timeout=5)
 
 
 @app.get("/features")
@@ -231,6 +476,8 @@ class RiskRequest(BaseModel):
     avg_loss_pct:     float = Field(1.0)
     max_position_pct: float = Field(0.05, description="Max position size (0-1)")
     max_drawdown_halt:float = Field(0.10, description="Circuit breaker drawdown")
+    current_portfolio_value: Optional[float] = Field(None, gt=0,
+        description="Latest marked portfolio value used to evaluate the drawdown breaker")
 
 
 class ExecuteRequest(BaseModel):
@@ -243,7 +490,8 @@ class ExecuteRequest(BaseModel):
 
 
 @app.post("/risk/position")
-def compute_risk_position(request: RiskRequest):
+async def compute_risk_position(request: RiskRequest,
+                               user: dict = Depends(require_roles("trader", "risk_analyst"))):
     """
     Compute execution-ready position size with full risk controls.
     Returns stop-loss, take-profit, shares, risk per trade.
@@ -256,6 +504,8 @@ def compute_risk_position(request: RiskRequest):
             max_drawdown_halt  = request.max_drawdown_halt,
         )
         rm    = RiskManager(cfg)
+        if request.current_portfolio_value is not None:
+            rm.update_portfolio_value(request.current_portfolio_value)
         order = rm.compute_position(
             ticker      = request.ticker,
             pred_return = request.pred_return_pct,
@@ -265,13 +515,21 @@ def compute_risk_position(request: RiskRequest):
             avg_win_pct = request.avg_win_pct,
             avg_loss_pct= request.avg_loss_pct,
         )
-        return order.to_dict()
+        result = order.to_dict()
+        event_type = "circuit_breaker" if order.signal == "HALT" else "risk_metrics"
+        try:
+            latency_ms = await publish_risk_event(event_type, result)
+            result["redis_publish_latency_ms"] = round(latency_ms, 3)
+            logger.info("Published %s event to Redis in %.3f ms", event_type, latency_ms)
+        except Exception:
+            logger.exception("Risk result generated but Redis broadcast failed")
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/risk/matrix")
-def risk_matrix(request: RiskRequest):
+def risk_matrix(request: RiskRequest, user: dict = Depends(require_roles("trader", "risk_analyst"))):
     """Return full risk matrix for a given prediction."""
     try:
         from src.risk_manager import RiskManager, RiskConfig
@@ -289,7 +547,9 @@ def risk_matrix(request: RiskRequest):
 
 
 @app.post("/execute")
-def execute_trade(request: ExecuteRequest):
+@traced("broker.execute_order")
+def execute_trade(request: ExecuteRequest,
+                  user: dict = Depends(require_roles("trader"))):
     """
     Execute a trade via broker integration.
     Supports: Alpaca (paper + live), paper simulation.
@@ -409,7 +669,9 @@ def list_strategies():
 
 
 @app.post("/strategies/{name}/run")
-def run_strategy(name: str, source: str = "csv"):
+@traced("strategy.run_inference")
+def run_strategy(name: str, source: str = "csv",
+                 user: dict = Depends(require_roles("trader"))):
     try:
         from src.strategy_registry import StrategyRegistry
         return StrategyRegistry().run_strategy(name, source=source)
@@ -441,7 +703,9 @@ class CopilotRequest(BaseModel):
 
 
 @app.post("/copilot/research")
-def copilot_research(req: CopilotRequest):
+@traced("copilot.research_inference")
+def copilot_research(req: CopilotRequest,
+                     user: dict = Depends(require_roles("trader", "risk_analyst"))):
     try:
         from src.copilot import CopilotGraph
         g = CopilotGraph(ticker=req.ticker)
@@ -452,7 +716,7 @@ def copilot_research(req: CopilotRequest):
 
 
 @app.get("/hitl/pending")
-def hitl_pending():
+def hitl_pending(user: dict = Depends(require_roles("risk_analyst"))):
     try:
         from src.copilot.hitl_router import HITLRouter
         return {"pending": HITLRouter().pending_approvals()}
@@ -465,7 +729,8 @@ class HITLApprovalRequest(BaseModel):
 
 
 @app.post("/hitl/approve/{signal_id}")
-def hitl_approve(signal_id: str, req: HITLApprovalRequest):
+def hitl_approve(signal_id: str, req: HITLApprovalRequest,
+                 user: dict = Depends(require_roles("admin"))):
     try:
         from src.copilot.hitl_router import HITLRouter
         return HITLRouter().approve(signal_id, approver=req.approver)
@@ -474,7 +739,8 @@ def hitl_approve(signal_id: str, req: HITLApprovalRequest):
 
 
 @app.get("/compliance/report")
-def compliance_report(tenant_id: str = "default"):
+def compliance_report(tenant_id: str = "default",
+                     user: dict = Depends(require_roles("risk_analyst"))):
     try:
         from src.compliance_sebi import SEBIComplianceChecker
         checker = SEBIComplianceChecker()

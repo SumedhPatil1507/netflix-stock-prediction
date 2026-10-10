@@ -25,6 +25,7 @@ sys.path.insert(0, REPO_ROOT)
 
 from src.modeling import get_active_features
 from src.feature_utils import build_prediction_row
+from src.backtest import run_backtest, render_backtest_dashboard
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -332,8 +333,83 @@ with tab_pred:
 # TAB 3 — BACKTESTING
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_bt:
-    st.subheader("Strategy Backtesting Engine")
-    st.caption("Binary long/flat + Kelly-sized strategy vs Buy & Hold. Includes transaction costs.")
+    st.subheader("Event-Driven Backtesting")
+    st.caption("Chronological holdout simulation with dynamic sizing, variable spread, and market impact.")
+
+    with st.expander("Backtest assumptions", expanded=True):
+        bc1, bc2, bc3 = st.columns(3)
+        with bc1:
+            bt_cost_bps = st.number_input("Commission (bps / turnover)", min_value=0.0,
+                                          max_value=100.0, value=10.0, step=1.0)
+            bt_spread_bps = st.number_input("Bid-ask spread (bps)", min_value=0.0,
+                                            max_value=500.0, value=10.0, step=1.0)
+        with bc2:
+            bt_vol_target = st.number_input("Annual volatility target", min_value=0.01,
+                                             max_value=1.0, value=0.15, step=0.01,
+                                             format="%.2f")
+            bt_drawdown_limit = st.number_input("Circuit breaker drawdown", min_value=0.02,
+                                                max_value=0.80, value=0.20, step=0.01,
+                                                format="%.2f")
+        with bc3:
+            bt_rf = st.number_input("Annual risk-free rate", min_value=0.0,
+                                    max_value=0.30, value=0.05, step=0.01,
+                                    format="%.2f")
+            st.caption("The latest 20% of feature rows form the holdout window.")
+
+    if st.button("Run holdout backtest", type="primary", key="run_event_backtest"):
+        try:
+            backtest_frame = df_feat.copy()
+            feature_names = list(FEATURES)
+            missing_features = [name for name in feature_names if name not in backtest_frame.columns]
+            if missing_features:
+                raise ValueError(f"Feature cache is missing model inputs: {missing_features[:5]}")
+            backtest_frame["_next_return_pct"] = (
+                backtest_frame["Close"].shift(-1) / backtest_frame["Close"] - 1.0
+            ) * 100.0
+            backtest_frame = backtest_frame.replace([np.inf, -np.inf], np.nan).dropna(
+                subset=feature_names + ["_next_return_pct", "Close", "Volume"]
+            )
+            split_at = int(len(backtest_frame) * 0.80)
+            holdout = backtest_frame.iloc[split_at:]
+            if len(holdout) < 20:
+                raise ValueError("At least 20 holdout observations are required")
+            holdout_x = holdout[feature_names]
+            with st.spinner(f"Scoring {len(holdout):,} chronological holdout observations..."):
+                predictions = model.predict(holdout_x)
+                backtest_result = run_backtest(
+                    holdout["_next_return_pct"], predictions,
+                    transaction_cost=bt_cost_bps / 10_000.0,
+                    rf_annual=bt_rf,
+                    prices=holdout["Close"],
+                    volumes=holdout["Volume"],
+                    spread_bps=bt_spread_bps,
+                    volatility_target=bt_vol_target,
+                    max_drawdown=bt_drawdown_limit,
+                )
+            backtest_result["curves"].index = holdout.index
+            backtest_result["rolling_sharpe"] = pd.Series(
+                backtest_result["rolling_sharpe"], index=holdout.index
+            )
+            st.session_state["event_backtest_result"] = backtest_result
+            st.session_state["event_backtest_window"] = [str(holdout.index[0]), str(holdout.index[-1])]
+        except Exception as exc:
+            st.error(f"Backtest could not run: {exc}")
+
+    if "event_backtest_result" in st.session_state:
+        saved_bt = st.session_state["event_backtest_result"]
+        bt_dates = st.session_state.get("event_backtest_window", [])
+        if len(bt_dates) == 2:
+            st.caption(f"Holdout window: {bt_dates[0]} to {bt_dates[1]} · {len(saved_bt['curves']):,} observations")
+        render_backtest_dashboard(saved_bt, streamlit_module=st)
+        st.download_button(
+            "Download backtest analytics (CSV)",
+            data=saved_bt["curves"].to_csv(index=True),
+            file_name=f"{ticker.lower()}_backtest_analytics.csv",
+            mime="text/csv",
+        )
+
+    st.divider()
+    st.markdown("#### Previously generated backtest artifacts")
 
     bt_path = os.path.join(REPO_ROOT, "outputs", "backtest_curves.csv")
     rs_path = os.path.join(REPO_ROOT, "outputs", "rolling_sharpe.csv")
