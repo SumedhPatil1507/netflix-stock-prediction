@@ -20,7 +20,7 @@ dependencies = [
     "streamlit>=1.32.0",
     "numpy>=1.26.4,<2.0",
     "pandas>=2.2.2",
-    "scikit-learn>=1.4.2",
+    "scikit-learn==1.8.0",
     "joblib>=1.3.2",
     "matplotlib>=3.8.4",
     "seaborn>=0.13.2",
@@ -36,6 +36,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+api = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "redis>=5.0.0",
+    "sse-starlette>=2.1.0",
+    "python-jose[cryptography]>=3.3.0",
+    "python-multipart>=0.0.9",
+    "opentelemetry-api>=1.25.0",
+]
+streaming = [
+    "feast[redis]>=0.40.0",
+    "aiokafka>=0.10.0",
+    "redis>=5.0.0",
+]
 dev = [
     "shap>=0.45.1",
     "hmmlearn>=0.3.0",
@@ -45,6 +59,7 @@ dev = [
     "pytest>=8.0.0",
     "optuna>=3.6.0",
     "pre-commit>=3.7.0",
+    "groq>=0.4.0",
 ]
 
 [project.urls]

@@ -1,169 +1,130 @@
-# Alpha Engine
+# Alpha Engine Pro
 
-[![Tests](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/test.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)
-[![Retrain](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/retrain.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)
-[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-Live-red)](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<p align="center">
+  <strong>Interactive quantitative research for equity signals, risk, and execution.</strong><br>
+  A Streamlit and Plotly dashboard backed by a time-series ML pipeline and FastAPI service.
+</p>
 
-> Production-grade ML system for stock return prediction with execution-ready risk management and broker integration.
+<p align="center">
+  <a href="https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app">Open the live dashboard</a>
+  &nbsp;·&nbsp;
+  <a href="RESULTS.md">Model results</a>
+  &nbsp;·&nbsp;
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
 
-**[Live App](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)** | **[Results](RESULTS.md)** | **[Contributing](CONTRIBUTING.md)**
+<p align="center">
+  <img alt="Python 3.11+" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white">
+  <img alt="Streamlit" src="https://img.shields.io/badge/UI-Streamlit-FF4B4B?logo=streamlit&logoColor=white">
+  <img alt="Plotly" src="https://img.shields.io/badge/Charts-Plotly-3F4F75?logo=plotly&logoColor=white">
+  <img alt="FastAPI" src="https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white">
+  <a href="https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/test.yml"><img alt="Tests" src="https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/test.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
+</p>
+
+> **Research software only.** Predictions and backtests are experimental and are not investment advice or a promise of future performance. Review data quality, costs, and execution assumptions before relying on any output.
 
 ---
 
-## What's Inside
+## Dashboard
 
-| Layer | Implementation |
+Run the app locally with `streamlit run app/app.py`. The dashboard uses a coordinated dark theme and responsive, interactive Plotly charts. Use hover for detailed values, drag to zoom, scroll to zoom, pan across time, toggle series in the legend, and export high-resolution PNGs from each chart toolbar.
+
+| Workspace | Interactive views |
 |---|---|
-| **Data** | yfinance · Alpha Vantage (1min/5min) · Alpaca Markets (minute bars) · CSV fallback |
-| **Features** | 51 technical indicators — lags, RSI, MACD, BB, ATR, Stochastic, CCI, OBV, regime |
-| **Model** | XGB + LGBM + RF + ET → Ridge (manual stacking, OOF, walk-forward CV) |
-| **Uncertainty** | Conformal prediction — 90% calibrated intervals |
-| **Risk** | ATR stop-loss · Kelly sizing · portfolio heat · drawdown circuit breaker |
-| **Execution** | `/execute` endpoint — Alpaca paper/live + paper simulation |
-| **Versioning** | Timestamped model saves + JSON registry with rollback |
-| **Retraining** | GitHub Actions cron (weekly) + manual trigger |
-| **Monitoring** | PSI + KS drift detection · Slack/email alerts |
-| **API** | FastAPI v2.0 — rate limited, `/predict` `/risk/position` `/execute` `/registry` |
-| **Dashboard** | 9-tab Streamlit — all Plotly interactive, multi-ticker |
-| **Tests** | 40+ pytest unit tests across all modules |
+| Market | Candlesticks, volume, moving averages, RSI, MACD, and Bollinger Bands |
+| Predict | Editable OHLCV window, next-close estimate, signal, and conformal interval |
+| Backtest | Chronological holdout, equity, drawdown, position exposure, and rolling Sharpe; configure costs and risk limits |
+| Paper trading | Day-by-day simulation, cumulative PnL, and predicted-versus-realized returns |
+| Risk & drift | Position sizing, stop levels, VaR/CVaR, correlations, volatility, and feature drift |
+| Explainability | Feature importance and model comparisons |
+| Research & operations | Copilot research, strategy lab, track record, compliance, and observability |
 
----
+The Backtesting tab runs the current model on the final 20% of the cached chronological feature data. It exposes commission, bid-ask spread, annual volatility target, drawdown breaker, and risk-free rate controls. Its interactive report includes Sharpe, Sortino, Calmar, maximum drawdown and duration, 95% expected shortfall, and profit factor.
 
-## Architecture
+## Start the Streamlit app
 
-```
-Data Sources
-  ├── yfinance (daily/intraday)
-  ├── Alpha Vantage (1min–daily, free tier)
-  └── Alpaca Markets (minute bars, paper account)
-        │
-  data_loader.py → preprocessing → feature_engineering (51 features)
-        │
-  regime_detection.py (HMM: Bull/Bear/Sideways)
-        │
-  ManualStackingRegressor (XGB + LGBM + RF + ET → Ridge)
-        │
-  uncertainty.py (conformal intervals, 90% coverage)
-        │
-  risk_manager.py (ATR stop, Kelly, circuit breaker)
-        │
-  model_registry.py (versioned saves)
-        │
-  ├── FastAPI: /predict /risk/position /risk/matrix /execute /registry
-  ├── Streamlit: 9 interactive tabs
-  └── GitHub Actions: CI + weekly retraining
-```
-
----
-
-## Quick Start
+Requirements: Python 3.11 or newer. From the repository root:
 
 ```bash
-cp .env.example .env          # add API keys
-pip install -r requirements-dev.txt
+python -m venv .venv
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+# macOS/Linux: source .venv/bin/activate
 
-make train                    # train on CSV
-make train-live               # train on live yfinance
-make train-alphavantage       # train on Alpha Vantage data
-make train-alpaca             # train on Alpaca minute bars
-
-make app                      # Streamlit dashboard
-make api                      # FastAPI at localhost:8000/docs
-make test                     # run all tests
-make paper-trade              # 90-day paper trade simulation
-make registry                 # view model version history
+python -m pip install -r requirements.txt
+python -m streamlit run app/app.py
 ```
 
----
+Open <http://localhost:8501>. The repository includes a model and cached features for the dashboard. Market history uses Yahoo Finance when available and falls back to the local dataset. Use the ticker and period controls in the sidebar to explore the data.
 
-## Data Sources
+### Deploy on Streamlit Community Cloud
 
-| Source | Interval | Key Required | Notes |
-|---|---|---|---|
-| yfinance | daily + intraday | No | Free, rate limited |
-| Alpha Vantage | 1min/5min/daily | `ALPHA_VANTAGE_KEY` | 25 req/day free |
-| Alpaca Markets | 1min–1day | `ALPACA_API_KEY` + `ALPACA_SECRET_KEY` | Free paper account |
-| CSV | daily | No | Offline fallback |
+1. Push the desired commit to GitHub and merge it into the branch you want to deploy.
+2. In Streamlit Community Cloud, create or open the app and select repository `SumedhPatil1507/netflix-stock-prediction`.
+3. Set the branch to `main` and the main file path to `app/app.py`.
+4. Deploy. The app installs its dashboard packages from the root `requirements.txt`; the checked-in model and feature cache provide the initial offline fallback.
 
----
+When updating an existing app, confirm its configured repository, branch, and main file path first. After a merge to the configured branch, Streamlit Cloud redeploys the app. If it remains on an old build, use **Manage app → Reboot** or **Clear cache** and inspect the app logs for a dependency or startup error.
 
-## API Endpoints
+To retrain the model and regenerate cached outputs:
 
 ```bash
-uvicorn api.main:app --reload
-# Swagger: http://localhost:8000/docs
+python main.py --source csv --ticker NFLX
 ```
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/predict` | POST | ML prediction + conformal interval |
-| `/risk/position` | POST | Execution-ready position size |
-| `/risk/matrix` | POST | Full risk matrix |
-| `/execute` | POST | Submit order to Alpaca or paper |
-| `/model_info` | GET | Architecture + metrics + version |
-| `/registry` | GET | All model versions |
-| `/health` | GET | Status check |
+## Run the API
 
----
-
-## Risk Management
-
-The `/risk/position` endpoint and Risk tab compute:
-- **ATR-based stop-loss** — adapts to current volatility
-- **Fixed % stop** — hard floor (default 2%)
-- **Take-profit** — 2× stop distance (configurable R:R)
-- **Kelly fraction** — position size proportional to edge
-- **Portfolio heat** — max total open risk (default 20%)
-- **Drawdown circuit breaker** — halts trading at 10% drawdown
-
----
-
-## Environment Variables
+The API provides prediction, risk, and execution routes, plus bearer-authenticated SSE streams. Configure secrets in an untracked `.env` file; start Redis for Pub/Sub features.
 
 ```bash
-# Data sources
-ALPHA_VANTAGE_KEY=...
-ALPACA_API_KEY=...
-ALPACA_SECRET_KEY=...
-ALPACA_BASE_URL=https://paper-api.alpaca.markets
-
-# Alerts
-SLACK_WEBHOOK_URL=...
-ALERT_EMAIL=...
-
-# API
-API_RATE_LIMIT=10
-DEFAULT_TICKER=NFLX
+python -m pip install -r requirements-api.txt
+Copy-Item .env.example .env  # Windows PowerShell; edit the values before starting
+python -m uvicorn api.main:app --reload
 ```
 
----
+Set a strong `API_JWT_SECRET` (at least 32 characters) and `API_USERS_JSON` with PBKDF2 password hashes and roles (`trader`, `risk_analyst`, or `admin`). The API also accepts externally issued HS256 or RS256/384/512 JWTs when the matching issuer, audience, and key settings are configured. Never commit `.env`, broker credentials, JWT secrets, or production keys.
 
-## Project Structure
+Obtain a local access token from `/oauth/token` using form fields `username` and `password`, then send `Authorization: Bearer <token>`. Prediction streams use:
 
-```
-src/
-  data_loader.py       # yfinance + Alpha Vantage + Alpaca + CSV
-  feature_utils.py     # shared feature computation
-  modeling.py          # ManualStackingRegressor + conformal
-  risk_manager.py      # ATR stop, Kelly, circuit breaker
-  model_registry.py    # versioned model saves
-  monitoring.py        # Slack/email alerts
-  regime_detection.py  # HMM Bull/Bear/Sideways
-  backtest.py          # Kelly + Sharpe/Sortino/Calmar
-  drift.py             # PSI + KS drift detection
-  paper_trade.py       # day-by-day live simulation
-  sentiment.py         # VADER news scoring
-  tuning.py            # Optuna hyperparameter search
-api/main.py            # FastAPI v2.0
-app/app.py             # Streamlit 9-tab dashboard
-tests/                 # 40+ unit tests
-.github/workflows/     # CI + weekly retraining
+```text
+GET /api/v1/stream/predictions/{symbol}
+GET /api/v1/stream/risk
 ```
 
----
+Publish market updates as JSON to Redis channel `alpha:stream:{SYMBOL}`. Include a `rows` array of OHLCV objects to request a new model prediction and conformal interval. Risk position calculations publish risk metrics and circuit-breaker events on `alpha:risk:events`.
 
-## Tech Stack
+## Point-in-time and streaming features
 
-Python · XGBoost · LightGBM · Scikit-learn · hmmlearn · Plotly · FastAPI · Streamlit · Optuna · Pytest · GitHub Actions · python-dotenv · yfinance · Alpha Vantage · Alpaca Markets
+- `feature_store.yaml` and `src/feature_store.py` define Feast stock metrics with event and creation timestamps for historical point-in-time retrieval.
+- `src/data_loader.py` includes a backward, availability-aware join and Feast historical retrieval helper to prevent future or late-arriving values from leaking into backtests.
+- `src/streaming/kafka_consumer.py` consumes normalized Kafka events and writes OFI, VWAP, spread, and micro-slippage features to Redis.
+- The Kafka producer/market-data bridge must normalize its event format. Alpaca's stock websocket provides trades and best quotes; full market depth requires a data source that supplies L2 snapshots.
+
+Install the online feature services with `python -m pip install -r requirements-streaming.txt`. Feast/Kafka/Redis are separate from the Streamlit dashboard install so hosted charts do not need those services.
+
+## Project map
+
+```text
+app/app.py                    Streamlit research dashboard
+api/main.py                   FastAPI inference, RBAC, SSE, and Redis events
+src/backtest.py               Event-driven execution and risk simulation
+src/data_loader.py            Market data and point-in-time feature joins
+src/feature_utils.py          Technical and L2 microstructure features
+src/feature_store.py          Feast entities and feature views
+src/streaming/kafka_consumer.py  Kafka-to-Redis online feature consumer
+feature_store.yaml            Feast repository configuration
+tests/                        Unit and API tests
+```
+
+## Development
+
+```bash
+python -m pytest tests/ -q
+```
+
+The dashboard, API, and streaming worker use separate dependency groups. The root `requirements.txt` is sized for Streamlit Cloud and offline analytics. Install `requirements-api.txt` for FastAPI, SSE, JWT, and Redis Pub/Sub; install `requirements-streaming.txt` for Feast, Kafka, and the Redis online feature path. Redis and Kafka services are only needed for online features.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
