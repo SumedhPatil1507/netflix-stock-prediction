@@ -1,0 +1,25 @@
+{
+  "name": "streaming-catalog-upload",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build"
+  },
+  "devDependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "hls.js": "^1.5.18",
+    "lucide-react": "^0.468.0",
+    "next": "14.2.35",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tailwind-merge": "^2.6.0",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "22.15.30",
+    "@types/react": "18.3.23",
+    "postcss": "^8.5.23",
+    "tailwindcss": "^4.3.3",
+    "typescript": "5.8.3"
+  },
+  "overrides": { "postcss": "^8.5.23", "postcss-selector-parser": "^7.1.6" }
+}

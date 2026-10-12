@@ -62,6 +62,13 @@ def test_position_value_within_limit(rm):
     assert order.position_value <= max_val * 1.01  # 1% tolerance
 
 
+def test_hold_when_one_share_exceeds_position_limit(rm):
+    order = rm.compute_position("NFLX", pred_return=1.0, last_price=6_000.0, atr=100.0)
+    assert order.signal == "HOLD"
+    assert order.shares == 0
+    assert order.position_value == 0
+
+
 def test_circuit_breaker_halts_trading(rm):
     rm.update_portfolio_value(85_000)  # 15% drawdown > 10% halt
     order = rm.compute_position("NFLX", pred_return=1.0, last_price=650.0, atr=10.0)
