@@ -1,4 +1,4 @@
--r requirements.txt
+-r requirements-api.txt
 feast[redis]>=0.40.0
 aiokafka>=0.10.0
 redis>=5.0.0

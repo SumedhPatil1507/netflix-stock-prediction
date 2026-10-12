@@ -44,6 +44,9 @@ api = [
     "python-jose[cryptography]>=3.3.0",
     "python-multipart>=0.0.9",
     "opentelemetry-api>=1.25.0",
+    "opentelemetry-sdk>=1.25.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.25.0",
+    "prometheus-client>=0.21.0",
 ]
 streaming = [
     "feast[redis]>=0.40.0",
