@@ -1,4 +1,4 @@
--r requirements.txt
+-r requirements-api.txt
 shap>=0.45.1
 hmmlearn>=0.3.0
 fastapi>=0.110.0

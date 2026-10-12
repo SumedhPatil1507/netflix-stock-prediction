@@ -1,0 +1,10 @@
+{
+  "sessions": 10000,
+  "catalog_size": 100,
+  "relevant_titles_per_session": 3,
+  "k": 10,
+  "seed": 17,
+  "mrr_at_k": 0.7990721825396827,
+  "ndcg_at_k": 0.5263108883352233,
+  "precision_at_k": 0.14353000000000143
+}

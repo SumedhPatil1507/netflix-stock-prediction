@@ -54,6 +54,64 @@ def load_data(
     return _load_csv(ticker)
 
 
+def point_in_time_join(entity_df: pd.DataFrame, feature_df: pd.DataFrame,
+                       *, entity_timestamp: str = "event_timestamp",
+                       feature_timestamp: str = "event_timestamp",
+                       created_timestamp: str = "created_timestamp",
+                       entity_key: str = "ticker") -> pd.DataFrame:
+    """Backward as-of join using only features available at each entity time.
+
+    Feature rows are eligible only when both their event time and ingestion/
+    creation time are no later than the entity timestamp. This guards against
+    late-arriving values leaking into historical backtests.
+    """
+    entities = entity_df.copy()
+    features = feature_df.copy()
+    for frame, col in ((entities, entity_timestamp), (features, feature_timestamp),
+                       (features, created_timestamp)):
+        frame[col] = pd.to_datetime(frame[col], utc=True)
+    feature_cols = [c for c in features.columns if c not in {entity_key, feature_timestamp, created_timestamp}]
+    output = []
+    for _, entity in entities.iterrows():
+        eligible = features[
+            (features[entity_key] == entity[entity_key])
+            & (features[feature_timestamp] <= entity[entity_timestamp])
+            & (features[created_timestamp] <= entity[entity_timestamp])
+        ]
+        row = entity.to_dict()
+        if eligible.empty:
+            row.update({col: np.nan for col in feature_cols})
+            row["feature_event_timestamp"] = pd.NaT
+            row["feature_created_timestamp"] = pd.NaT
+        else:
+            feature = eligible.sort_values([feature_timestamp, created_timestamp]).iloc[-1]
+            row.update({col: feature[col] for col in feature_cols})
+            row["feature_event_timestamp"] = feature[feature_timestamp]
+            row["feature_created_timestamp"] = feature[created_timestamp]
+        output.append(row)
+    return pd.DataFrame(output)
+
+
+def load_historical_features(entity_df: pd.DataFrame, feature_refs: list[str] | None = None,
+                             repo_path: str = ".") -> pd.DataFrame:
+    """Retrieve Feast historical features with point-in-time semantics for backtests.
+
+    ``entity_df`` must include the Feast entity key and an ``event_timestamp``
+    column. Feast applies the source event/created timestamps during the join.
+    """
+    try:
+        from feast import FeatureStore
+    except ImportError as exc:
+        raise RuntimeError("Install feast to retrieve historical feature values") from exc
+    store = FeatureStore(repo_path=repo_path)
+    refs = feature_refs or [
+        "stock_metrics:close", "stock_metrics:volume", "stock_metrics:ofi",
+        "stock_metrics:vwap", "stock_metrics:vwap_micro_slippage_bps",
+        "stock_metrics:spread_bps",
+    ]
+    return store.get_historical_features(entity_df=entity_df, features=refs).to_df()
+
+
 # ── yfinance ──────────────────────────────────────────────────────────────────
 def _load_yfinance(ticker: str, interval: Interval = "daily") -> pd.DataFrame:
     try:
