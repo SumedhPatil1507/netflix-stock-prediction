@@ -81,9 +81,11 @@ Open <http://localhost:8501>. The repository includes a model and cached feature
 
 When updating an existing app, confirm its configured repository, branch, and main file path first. After a merge to the configured branch, Streamlit Cloud redeploys the app. If it remains on an old build, use **Manage app → Reboot** or **Clear cache** and inspect the app logs for a dependency or startup error.
 
-#### Publish dashboard changes from VS Code (PowerShell)
+#### Publish updates from VS Code (PowerShell)
 
-`main` requires verified signatures on every commit in the pull request. If your feature branch contains older unsigned commits, create a signed snapshot branch from `origin/main` so the PR contains one signed commit. First configure a GitHub-verified signing key under **GitHub → Settings → SSH and GPG keys**; GitHub must list the public key as a signing key. For an SSH key at the default path, configure Git with:
+The GitHub repository is `SumedhPatil1507/netflix-stock-prediction`. Its `main` branch requires a pull request, a passing **Tests** check, and verified commit signatures. Do not push directly to `main`.
+
+Configure an SSH signing key once. Add the public key (`id_ed25519.pub`) under **GitHub → Settings → SSH and GPG keys** and make sure GitHub marks it as a signing key. Then run:
 
 ```powershell
 git config --global gpg.format ssh
@@ -91,24 +93,31 @@ git config --global user.signingkey "$env:USERPROFILE\.ssh\id_ed25519.pub"
 git config --global commit.gpgsign true
 ```
 
-Then commit the edits on the feature branch, copy its complete tracked tree to a fresh branch based on `origin/main`, and create the signed snapshot:
+In the VS Code terminal, commit and push any new local edits on the published branch. Skip `git add` and `git commit` if there are no local edits; push the branch if you added a commit:
 
 ```powershell
 git status
-git switch publish/dashboard-updates
-git pull --ff-only origin publish/dashboard-updates
-git add app/app.py src/backtest.py README.md
-git commit -S -m "Polish interactive dashboard charts and docs"
 git fetch origin
-git switch -c publish/dashboard-updates-pr origin/main
-git checkout publish/dashboard-updates -- .
+git switch publish/dashboard-updates-pr
 git add -A
-git commit -S -m "Publish interactive dashboard updates"
+git commit -S -m "Update dashboard and documentation"
 git push -u origin publish/dashboard-updates-pr
 ```
 
-Open a pull request from `publish/dashboard-updates-pr` to `main` on GitHub. Resolve any conflicts in the PR and wait for the **Tests** check. After merge, Streamlit Cloud deploys from `main` if its app settings point to this repository, `main`, and `app/app.py`. Check **Manage app → Logs** if deployment fails. Keep the original feature branch as a backup; the snapshot branch is the one to propose for merge.
+The current `publish/dashboard-updates-pr` commit is unsigned, so use a new single-commit signed snapshot branch for the pull request. This keeps the branch protection rule requiring verified signatures satisfied. If this branch name already exists locally or remotely, replace it consistently below with a new name:
 
+```powershell
+git fetch origin
+git switch -c publish/dashboard-updates-signed origin/main
+git merge --squash publish/dashboard-updates-pr
+git add -A
+git commit -S -m "Publish dashboard updates"
+git push -u origin publish/dashboard-updates-signed
+```
+
+On GitHub, open a pull request with base `main` and compare branch `publish/dashboard-updates-pr` (or `publish/dashboard-updates-signed` if you created the signed snapshot). Review the changed files, resolve conflicts, and merge after the **Tests** check and signature requirements pass. A branch push alone does not update `main`.
+
+In Streamlit Community Cloud, open **Manage app → Settings** and confirm the repository is `SumedhPatil1507/netflix-stock-prediction`, the branch is `main`, and the main file path is `app/app.py`. Merging the pull request into `main` triggers the deployment. If the app still shows an old build, use **Manage app → Reboot** or **Clear cache**, then check **Manage app → Logs** for startup or dependency errors.
 Plotly charts are interactive: hover for values, drag to zoom, scroll to zoom, pan, toggle traces from the legend, and export PNGs from the mode bar. Backtest charts use the same dark dashboard palette and toolbar controls.
 
 To retrain the model and regenerate cached outputs:
