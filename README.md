@@ -72,6 +72,8 @@ python -m streamlit run app/app.py
 
 Open <http://localhost:8501>. The repository includes a model and cached features for the dashboard. Market history uses Yahoo Finance when available and falls back to the local dataset. Use the ticker and period controls in the sidebar to explore the data.
 
+The dashboard and CI dependencies use NumPy 2.x (`numpy>=2.0,<3.0`) for compatibility with current PyArrow releases.
+
 ### Deploy on Streamlit Community Cloud
 
 1. Push the desired commit to GitHub and merge it into the branch you want to deploy. This repository's `main` branch requires a pull request, passing `Tests` status check, and verified commit signatures; direct pushes to `main` are rejected.
