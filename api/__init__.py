@@ -1,1 +1,1 @@
-ÿþ
+"""FastAPI service package."""
