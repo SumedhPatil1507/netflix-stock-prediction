@@ -38,3 +38,15 @@ def test_point_in_time_join_has_no_future_or_late_data_leakage():
 
     assert pd.isna(result.loc[0, "ofi"])
     assert pd.isna(result.loc[0, "feature_created_timestamp"])
+
+
+def test_point_in_time_join_rejects_future_credit_utilization():
+    entities = pd.DataFrame({"ticker": ["NFLX"], "event_timestamp": ["2024-01-01T10:02:00Z"]})
+    features = pd.DataFrame({
+        "ticker": ["NFLX"],
+        "event_timestamp": ["2024-01-01T10:01:00Z"],
+        "created_timestamp": ["2024-01-01T10:03:00Z"],
+        "credit_utilization": [0.91],
+    })
+    result = point_in_time_join(entities, features)
+    assert pd.isna(result.loc[0, "credit_utilization"])

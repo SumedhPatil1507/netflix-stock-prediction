@@ -37,6 +37,23 @@ except ImportError:
 try:
     from opentelemetry import trace
     _tracer = trace.get_tracer("alpha-engine.api")
+    # Install a real SDK provider when configured. Without an OTLP endpoint the
+    # SDK still records spans for local exporters/instrumentation; deployments
+    # can point OTEL_EXPORTER_OTLP_ENDPOINT at their collector.
+    try:
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        if isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider):
+            _provider = TracerProvider(resource=Resource.create({"service.name": "alpha-engine-api"}))
+            _endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+            if _endpoint:
+                from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+                _provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+            trace.set_tracer_provider(_provider)
+        _tracer = trace.get_tracer("alpha-engine.api")
+    except ImportError:
+        pass
 except ImportError:
     trace = None
     _tracer = None
@@ -860,11 +877,11 @@ async def compute_risk_position(request: RiskRequest,
             avg_win_pct = request.avg_win_pct,
             avg_loss_pct= request.avg_loss_pct,
         )
-        result = order.to_dict()
+        order_details = order.to_dict()
+        result = _risk_json(order_details, request)
         event_type = "circuit_breaker" if order.signal == "HALT" else "risk_metrics"
         try:
-            latency_ms = await publish_risk_event(event_type, result)
-            result["redis_publish_latency_ms"] = round(latency_ms, 3)
+            latency_ms = await publish_risk_event(event_type, {**result, "details": order_details})
             logger.info("Published %s event to Redis in %.3f ms", event_type, latency_ms)
         except Exception:
             logger.exception("Risk result generated but Redis broadcast failed")
@@ -881,14 +898,63 @@ def risk_matrix(request: RiskRequest, user: dict = Depends(require_roles("trader
         cfg = RiskConfig(portfolio_value=request.portfolio_value,
                          max_position_pct=request.max_position_pct)
         rm  = RiskManager(cfg)
-        return rm.risk_matrix(
+        matrix = rm.risk_matrix(
             pred_return    = request.pred_return_pct,
             last_price     = request.last_price,
             atr            = request.atr,
             portfolio_value= request.portfolio_value,
         )
+        return _risk_json(matrix, request)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _risk_json(details: dict, request: RiskRequest) -> dict:
+    """Normalize risk endpoint output to the public explainable-risk contract."""
+    try:
+        drivers = details.get("shap_drivers") or details.get("feature_drivers") or []
+        driver_text = ", ".join(
+            f"{item.get('feature', item.get('name', 'feature'))}"
+            f" ({item.get('importance', item.get('value', 'n/a'))})"
+            for item in drivers[:5] if isinstance(item, dict)
+        ) or "SHAP feature drivers unavailable"
+        interval = details.get("confidence_interval") or details.get("conformal_interval") or {}
+        lower = interval.get("lower_return_pct", interval.get("lower"))
+        upper = interval.get("upper_return_pct", interval.get("upper"))
+        if lower is None and upper is None and _model is not None and hasattr(_model, "conformal_"):
+            conformal = _model.conformal_
+            if getattr(conformal, "_quantile", None) is not None:
+                radius = float(conformal._quantile)
+                lower, upper = request.pred_return_pct - radius, request.pred_return_pct + radius
+        bounds = (f"{float(lower):.4f}% to {float(upper):.4f}%"
+                  if lower is not None and upper is not None else "bounds unavailable")
+        signal = str(details.get("signal", "APPROVED"))
+        if signal == "HALT" or details.get("is_halted"):
+            verdict = "MARGIN CALL WARNING"
+        else:
+            verdict = "APPROVED"
+        kelly = details.get("kelly_fraction", details.get("fractional_kelly", 0.0))
+        shares = details.get("shares", details.get("position_size", "not available"))
+        stop = details.get("stop_loss_distance")
+        if stop is None and details.get("stop_loss"):
+            stop = abs(request.last_price - float(details["stop_loss"]))
+        if stop is None:
+            stop = min(2.0 * request.atr, request.last_price * 0.02)
+        stop_text = f"{float(stop):.4f}"
+        return {
+            "verdict": verdict,
+            "reasoning": (f"LightGBM SHAP feature drivers: {driver_text}. "
+                          f"Conformal Prediction 90% confidence interval: {bounds}."),
+            "recommendation": (f"Dynamic Fraction Kelly position size: {kelly}; "
+                               f"shares: {shares}; ATR stop-loss distance: {stop_text}."),
+            "next_steps": [
+                "Step 1: Submit order to Alpaca paper/live gateway",
+                "Step 2: Log trade execution to audit ledger",
+                "Step 3: Monitor PSI/CSI feature drift",
+            ],
+        }
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError("Unable to construct standardized risk response") from exc
 
 
 @app.post("/execute")

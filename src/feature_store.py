@@ -21,6 +21,13 @@ stock_features = FeatureView(
     schema=[
         Field(name="close", dtype=Float64),
         Field(name="volume", dtype=Float64),
+        # Causal, point-in-time technical indicators. These values must be
+        # materialized with the source event timestamp, never a future bar.
+        Field(name="return_1d", dtype=Float64),
+        Field(name="rsi_14", dtype=Float64),
+        Field(name="atr_14", dtype=Float64),
+        Field(name="realized_volatility_20d", dtype=Float64),
+        Field(name="credit_utilization", dtype=Float64),
         Field(name="ofi", dtype=Float64),
         Field(name="vwap", dtype=Float64),
         Field(name="vwap_micro_slippage_bps", dtype=Float64),

@@ -1,4 +1,4 @@
-# Alpha Engine Pro
+﻿# Alpha Engine Pro
 
 An interactive Streamlit research dashboard for equity market data, return predictions, backtesting, portfolio risk, and model monitoring. The default ticker is Netflix (`NFLX`); the sidebar accepts other Yahoo Finance tickers.
 
@@ -162,3 +162,25 @@ Run the test suite with `python -m pytest tests/ -q`. See [RESULTS.md](RESULTS.m
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Quant research and risk services
+
+The app includes a sequential backtester with causal fractional-Kelly and volatility sizing, a drawdown circuit breaker, variable spread and Almgren–Chriss style square-root plus quadratic market impact. Its report includes annualized return, Sharpe, Sortino, Calmar, 95% expected shortfall, maximum drawdown and drawdown duration. Start the interactive dashboard with `python -m streamlit run app/app.py`; use its Strategy Lab / Backtest view to inspect equity, drawdown, exposure, and rolling-Sharpe charts.
+
+Point-in-time feature definitions are in `feature_store.yaml` and `src/feature_store.py`; event-time and created-time checks in `point_in_time_join` prevent future or late-arriving observations from entering historical features. The optional Feast/Redis online store and asynchronous Kafka L2 consumer use `requirements-streaming.txt`. Kafka messages should be normalized to `ticker`, `event_timestamp`, and bid/ask price and size. Publish L2 data from an Alpaca/Polygon feed adapter to the configured topic (`L2_KAFKA_TOPIC`, default `alpaca.l2`). The consumer calculates OFI, VWAP, slippage, and spread features and publishes them to Redis.
+
+The authenticated FastAPI service exposes prediction SSE at `/api/v1/stream/predictions/{symbol}` and standardized explainable risk JSON at `/risk/position` and `/risk/matrix`. Model inference and broker execution spans use OpenTelemetry. Install optional services and start the API from the repository root:
+
+```powershell
+python -m pip install -r requirements-api.txt
+python -m pip install -r requirements-streaming.txt
+uvicorn api.main:app --host 0.0.0.0 --port 8000
+```
+
+Configure Redis, Kafka, JWT verification, and provider credentials using `.env.example` before enabling live integrations. The focused tests are `tests/test_feature_store.py` and `tests/test_almgren_chriss.py`; run them with `python -m pytest tests/test_feature_store.py tests/test_almgren_chriss.py`.
+
+### Live L2 ingestion and low-latency execution
+
+Run `python -m src.streaming.l2_websocket` to bridge provider websocket book snapshots into Kafka, then run `python -m src.streaming.kafka_consumer` to derive OFI, VWAP slippage, and spread features into Redis. Set `L2_WEBSOCKET_URL`, the provider's subscription payload in `L2_WEBSOCKET_SUBSCRIBE`, credentials, `KAFKA_BOOTSTRAP_SERVERS`, and Redis settings. The bridge requires full book snapshots or normalized `ticker`, event timestamp, bid/ask price and size fields; provider trade/top-of-book feeds alone are not full L2 depth.
+
+The standalone C++17 event loop in `hft/` reads normalized CSV snapshots (`event_ns,symbol,bid,bid_size,ask,ask_size`), calculates OFI and reports processing time in nanoseconds. Build it with `cmake -S hft -B hft/build; cmake --build hft/build`, then pipe a normalized feed into `hft/build/alpha_hft` (Windows: `hft/build/Debug/alpha_hft.exe`). It logs signals only by default. FIX transmission is disabled unless `FIX_HOST` and `FIX_PORT` point to an already authenticated FIX acceptor; configure sender/target IDs and conservative order caps before use. The FIX acceptor is responsible for session logon, sequencing, broker rules, and venue connectivity.

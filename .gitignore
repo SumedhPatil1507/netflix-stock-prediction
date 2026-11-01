@@ -18,6 +18,8 @@ data/catalog/
 models/recommendations/
 dist/
 build/
+hft/build/
+hft/alpha_hft.exe
 
 # AI Narrator auto-generated data
 data/chroma_db/
