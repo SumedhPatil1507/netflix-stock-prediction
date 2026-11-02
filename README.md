@@ -91,18 +91,20 @@ git config --global user.signingkey "$env:USERPROFILE\.ssh\id_ed25519.pub"
 git config --global commit.gpgsign true
 ```
 
-Commit and push the current dashboard work as a signed snapshot branch. Use a fresh branch name if `publish/streamlit-refresh` already exists. The source branch below is the current dashboard update branch; substitute your working branch if it has a different name.
+The Alpha Engine quant update is already pushed to `origin/publish/streamlit-refresh`. That branch contains the dashboard and quant changes, but Streamlit will not show them while the app tracks `main`. The current commits are unsigned, so create a signed snapshot branch from `main` before opening the required pull request. First make sure the working tree is clean; keep local `.vscode` settings and generated `__pycache__` files out of the snapshot.
 
 ```powershell
 git fetch origin
-git switch -c publish/streamlit-refresh origin/main
-git merge --squash publish/dashboard-updates-signed
-git add -A
-git commit -S -m "Update Streamlit dashboard and documentation"
-git push -u origin publish/streamlit-refresh
+git stash push -u -m "local VS Code settings and generated files"
+git switch -c publish/alpha-engine-quant-signed origin/main
+git merge --squash origin/publish/streamlit-refresh
+git status
+git commit -S -m "Add quant risk and low-latency L2 execution"
+git push -u origin publish/alpha-engine-quant-signed
+git stash pop
 ```
 
-On GitHub, create a pull request from `publish/streamlit-refresh` into `main`. Review the diff and merge after the **Tests** check and signature requirement pass. If Git reports a conflict, resolve it, then stage the resolved files and complete the merge commit before pushing.
+On GitHub, create a pull request from `publish/alpha-engine-quant-signed` into `main`. Review the diff and merge after the **Tests** check and signature requirement pass. The same commands can be run in VS Code's integrated PowerShell terminal. If SSH commit signing is not configured, follow the setup commands above before creating the signed commit. After the signed branch is pushed, create the PR with `gh pr create --base main --head publish/alpha-engine-quant-signed` or use GitHub's **Compare & pull request** button.
 
 After the pull request is merged, Streamlit Community Cloud updates automatically when its configured branch is `main`. If the app tracks another branch, either change the app's branch in its settings or merge the update into that configured branch. Check the Streamlit app logs if the new build does not start.
 
