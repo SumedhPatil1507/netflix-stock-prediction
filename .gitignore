@@ -11,5 +11,20 @@ logs/
 *.log
 .pytest_cache/
 .mypy_cache/
+web/node_modules/
+web/.next/
+web/out/
+data/catalog/
+models/recommendations/
 dist/
 build/
+hft/build/
+hft/alpha_hft.exe
+
+# AI Narrator auto-generated data
+data/chroma_db/
+data/news/
+data/transcripts/
+
+# Kiro / workflow agent artefacts
+.agents/

@@ -1,0 +1,15 @@
+app_name: "Alpha Engine Pro"
+tagline: "Institutional Quant Research & Execution Platform"
+primary_color: "#e50914"
+secondary_color: "#ffd700"
+accent_color: "#00bcd4"
+logo_url: ""
+tenant_id: "default"
+allowed_tickers: []
+hitl_threshold_usd: 10000.0
+compliance_mode: "sebi"
+show_research_copilot: true
+show_strategy_lab: true
+show_track_record: true
+show_compliance: true
+footer_text: "Alpha Engine Pro · For institutional use only"

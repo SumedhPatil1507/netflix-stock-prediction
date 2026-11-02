@@ -5,15 +5,27 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 
 @pytest.fixture
-def client():
-    """Create a test client — skips if model not found."""
+def client(monkeypatch):
+    """Create an authenticated client for API endpoint tests."""
     try:
         from fastapi.testclient import TestClient
-        from api.main import app
-        return TestClient(app)
-    except Exception:
-        pytest.skip("FastAPI or model not available")
+        from api.main import app, jwt
+    except ImportError:
+        pytest.skip("FastAPI test dependencies are not installed")
 
+    if jwt is None:
+        pytest.skip("python-jose is not installed")
+
+    secret = "unit-test-secret-that-is-at-least-32-bytes"
+    monkeypatch.setenv("API_JWT_SECRET", secret)
+    token = jwt.encode(
+        {"sub": "api-test-user", "roles": ["trader"]},
+        secret,
+        algorithm="HS256",
+    )
+    test_client = TestClient(app)
+    test_client.headers.update({"Authorization": f"Bearer {token}"})
+    return test_client
 
 def test_health_endpoint(client):
     resp = client.get("/health")

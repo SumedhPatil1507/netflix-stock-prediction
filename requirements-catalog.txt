@@ -1,0 +1,8 @@
+# Optional text-asset semantic indexing; FFmpeg must be installed separately.
+-r requirements-api.txt
+-r requirements-streaming.txt
+qdrant-client>=1.10.0
+sentence-transformers>=2.7.0
+guardrails-ai>=0.6.0
+langgraph>=0.2.0
+langchain-openai>=0.1.0

@@ -5,6 +5,7 @@ Single source of truth — no more duplication across 3 files.
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+from typing import Any
 
 
 def compute_features_from_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
@@ -155,3 +156,40 @@ def build_prediction_row(df: pd.DataFrame, model) -> pd.DataFrame:
         if f not in d.columns:
             d[f] = 0.0
     return d[train_feats].iloc[[-1]]
+
+
+def compute_l2_features(message: dict[str, Any], previous: dict[str, Any] | None = None,
+                        cumulative_notional: float = 0.0,
+                        cumulative_volume: float = 0.0) -> dict[str, float]:
+    """Compute causal top-of-book OFI and VWAP slippage for one L2 snapshot.
+
+    Inputs use ``bid_price``, ``bid_size``, ``ask_price``, ``ask_size`` and
+    optionally ``trade_price``/``trade_size``. Only this and the prior snapshot
+    are read, so the result is safe for online inference and historical replay.
+    """
+    bid, ask = float(message["bid_price"]), float(message["ask_price"])
+    bid_size, ask_size = float(message["bid_size"]), float(message["ask_size"])
+    if bid <= 0 or ask <= 0 or ask < bid or bid_size < 0 or ask_size < 0:
+        raise ValueError("Invalid top-of-book prices or sizes")
+    prior = previous or {}
+    prev_bid, prev_ask = float(prior.get("bid_price", bid)), float(prior.get("ask_price", ask))
+    prev_bid_size = float(prior.get("bid_size", bid_size))
+    prev_ask_size = float(prior.get("ask_size", ask_size))
+    bid_delta = bid_size if bid > prev_bid else -prev_bid_size if bid < prev_bid else bid_size - prev_bid_size
+    ask_delta = ask_size if ask < prev_ask else -prev_ask_size if ask > prev_ask else ask_size - prev_ask_size
+    ofi = bid_delta - ask_delta
+    mid = (bid + ask) / 2.0
+    trade_price = float(message.get("trade_price", mid))
+    trade_size = max(0.0, float(message.get("trade_size", 0.0)))
+    notional = cumulative_notional + trade_price * trade_size
+    volume = cumulative_volume + trade_size
+    vwap = notional / volume if volume else mid
+    return {
+        "ofi": ofi,
+        "vwap": vwap,
+        "vwap_micro_slippage_bps": (vwap - mid) / mid * 10_000.0,
+        "mid_price": mid,
+        "spread_bps": (ask - bid) / mid * 10_000.0,
+        "cumulative_notional": notional,
+        "cumulative_volume": volume,
+    }

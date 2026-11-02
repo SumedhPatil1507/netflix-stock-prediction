@@ -1,0 +1,11 @@
+{
+  "regime_performance": {
+    "all": {
+      "n": 5716,
+      "dir_acc_pct": 51.61,
+      "rmse": 3.2197,
+      "mean_pred": 0.2854,
+      "mean_actual": 0.1627
+    }
+  }
+}

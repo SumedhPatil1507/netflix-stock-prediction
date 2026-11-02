@@ -1,169 +1,188 @@
-# Alpha Engine
+﻿# Alpha Engine Pro
 
-[![Tests](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/test.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)
-[![Retrain](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions/workflows/retrain.yml/badge.svg)](https://github.com/SumedhPatil1507/netflix-stock-prediction/actions)
-[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-Live-red)](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+An interactive Streamlit research dashboard for equity market data, return predictions, backtesting, portfolio risk, and model monitoring. The default ticker is Netflix (`NFLX`); the sidebar accepts other Yahoo Finance tickers.
 
-> Production-grade ML system for stock return prediction with execution-ready risk management and broker integration.
+[Open the live dashboard](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app) · [Model results](RESULTS.md) · [Contributing](CONTRIBUTING.md)
 
-**[Live App](https://netflix-stock-prediction-h4e4qxevbfjweltuumcxeb.streamlit.app)** | **[Results](RESULTS.md)** | **[Contributing](CONTRIBUTING.md)**
+> **Research software only.** Predictions, simulated trades, and backtests are experimental. They are not investment advice or a promise of future performance.
 
----
+## Dashboard
 
-## What's Inside
+Run the Streamlit app at `app/app.py`. The dashboard includes market charts and technical indicators, next-day return prediction, a chronological holdout backtest, paper trading, sentiment, position risk, feature drift, explainability, AI market narration, architecture, a strategy lab, a research copilot, a signal track record, compliance checks, and observability.
 
-| Layer | Implementation |
-|---|---|
-| **Data** | yfinance · Alpha Vantage (1min/5min) · Alpaca Markets (minute bars) · CSV fallback |
-| **Features** | 51 technical indicators — lags, RSI, MACD, BB, ATR, Stochastic, CCI, OBV, regime |
-| **Model** | XGB + LGBM + RF + ET → Ridge (manual stacking, OOF, walk-forward CV) |
-| **Uncertainty** | Conformal prediction — 90% calibrated intervals |
-| **Risk** | ATR stop-loss · Kelly sizing · portfolio heat · drawdown circuit breaker |
-| **Execution** | `/execute` endpoint — Alpaca paper/live + paper simulation |
-| **Versioning** | Timestamped model saves + JSON registry with rollback |
-| **Retraining** | GitHub Actions cron (weekly) + manual trigger |
-| **Monitoring** | PSI + KS drift detection · Slack/email alerts |
-| **API** | FastAPI v2.0 — rate limited, `/predict` `/risk/position` `/execute` `/registry` |
-| **Dashboard** | 9-tab Streamlit — all Plotly interactive, multi-ticker |
-| **Tests** | 40+ pytest unit tests across all modules |
+Plotly charts support hover, zoom, pan, legend toggles, and PNG export. Local model and feature-cache files are included, so first launch does not require model training. Market charts try Yahoo Finance and fall back to the included data when live data is unavailable.
 
----
+## Run from VS Code
 
-## Architecture
+Use Python 3.11. Open this repository folder in VS Code, open **Terminal → New Terminal**, and run these commands in PowerShell from the repository root:
 
-```
-Data Sources
-  ├── yfinance (daily/intraday)
-  ├── Alpha Vantage (1min–daily, free tier)
-  └── Alpaca Markets (minute bars, paper account)
-        │
-  data_loader.py → preprocessing → feature_engineering (51 features)
-        │
-  regime_detection.py (HMM: Bull/Bear/Sideways)
-        │
-  ManualStackingRegressor (XGB + LGBM + RF + ET → Ridge)
-        │
-  uncertainty.py (conformal intervals, 90% coverage)
-        │
-  risk_manager.py (ATR stop, Kelly, circuit breaker)
-        │
-  model_registry.py (versioned saves)
-        │
-  ├── FastAPI: /predict /risk/position /risk/matrix /execute /registry
-  ├── Streamlit: 9 interactive tabs
-  └── GitHub Actions: CI + weekly retraining
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m streamlit run app/app.py
 ```
 
----
+Open <http://localhost:8501>. To launch without activating the environment, run:
 
-## Quick Start
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app/app.py
+```
+
+If PowerShell blocks activation, either use the direct launch command above or allow locally created scripts for your user account with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
+### If the C: drive is low on space
+
+The XGBoost wheel is large, and pip also needs temporary space while installing it. If C: is nearly full, install Python 3.11 to a drive with free space (for example, `D:\Python311`) using the Python installer, then create the virtual environment and pip temp/cache directories on that drive. Adjust the Python path if you chose another install location:
+
+```powershell
+New-Item -ItemType Directory -Force D:\pip-temp, D:\pip-cache, D:\venvs | Out-Null
+$env:TEMP = 'D:\pip-temp'
+$env:TMP = 'D:\pip-temp'
+$env:PIP_CACHE_DIR = 'D:\pip-cache'
+& 'D:\Python311\python.exe' -m venv D:\venvs\netflix-stock
+& D:\venvs\netflix-stock\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m streamlit run app/app.py
+```
+
+If an earlier install left a broken `.venv` in the repository, remove that generated environment after switching to the new one with `Remove-Item -Recurse -Force .venv`.
+
+macOS/Linux:
 
 ```bash
-cp .env.example .env          # add API keys
-pip install -r requirements-dev.txt
-
-make train                    # train on CSV
-make train-live               # train on live yfinance
-make train-alphavantage       # train on Alpha Vantage data
-make train-alpaca             # train on Alpaca minute bars
-
-make app                      # Streamlit dashboard
-make api                      # FastAPI at localhost:8000/docs
-make test                     # run all tests
-make paper-trade              # 90-day paper trade simulation
-make registry                 # view model version history
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m streamlit run app/app.py
 ```
 
----
+The first install can take a few minutes because it includes the tree-model libraries used by the checked-in model. `requirements.txt` contains the dashboard dependencies. AI narration and retrieval features have additional packages; install them only if needed:
 
-## Data Sources
-
-| Source | Interval | Key Required | Notes |
-|---|---|---|---|
-| yfinance | daily + intraday | No | Free, rate limited |
-| Alpha Vantage | 1min/5min/daily | `ALPHA_VANTAGE_KEY` | 25 req/day free |
-| Alpaca Markets | 1min–1day | `ALPACA_API_KEY` + `ALPACA_SECRET_KEY` | Free paper account |
-| CSV | daily | No | Offline fallback |
-
----
-
-## API Endpoints
-
-```bash
-uvicorn api.main:app --reload
-# Swagger: http://localhost:8000/docs
+```powershell
+python -m pip install -r requirements-ai.txt
 ```
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/predict` | POST | ML prediction + conformal interval |
-| `/risk/position` | POST | Execution-ready position size |
-| `/risk/matrix` | POST | Full risk matrix |
-| `/execute` | POST | Submit order to Alpaca or paper |
-| `/model_info` | GET | Architecture + metrics + version |
-| `/registry` | GET | All model versions |
-| `/health` | GET | Status check |
+Without those optional packages, the main dashboard still starts; AI features that need them show an unavailable message. Optional API and streaming dependencies are listed separately in `requirements-api.txt` and `requirements-streaming.txt`.
 
----
+## Deploy or update Streamlit Community Cloud
 
-## Risk Management
+The Community Cloud app must point to this repository, the branch you want to deploy, and `app/app.py`. Select Python 3.11 in the app's advanced settings when creating it. Cloud installs the root `requirements.txt`; pushes to the configured branch trigger an app update. If the app is configured for `main`, changes must be merged into `main` before they appear in the live app.
 
-The `/risk/position` endpoint and Risk tab compute:
-- **ATR-based stop-loss** — adapts to current volatility
-- **Fixed % stop** — hard floor (default 2%)
-- **Take-profit** — 2× stop distance (configurable R:R)
-- **Kelly fraction** — position size proportional to edge
-- **Portfolio heat** — max total open risk (default 20%)
-- **Drawdown circuit breaker** — halts trading at 10% drawdown
+For a new app, open [Streamlit Community Cloud](https://share.streamlit.io/), choose **Create app**, then set:
 
----
+- Repository: `SumedhPatil1507/netflix-stock-prediction`
+- Branch: `main`
+- Main file path: `app/app.py`
+- Python: `3.11`
 
-## Environment Variables
+For an existing app, open **Manage app → Settings** and confirm those values. Community Cloud reads the repository's root `requirements.txt` and `.streamlit/config.toml`. Check **Manage app → Logs** if a build or startup fails; use **Reboot** after correcting a build issue.
 
-```bash
-# Data sources
-ALPHA_VANTAGE_KEY=...
-ALPACA_API_KEY=...
-ALPACA_SECRET_KEY=...
-ALPACA_BASE_URL=https://paper-api.alpaca.markets
+### Publish from the VS Code terminal
 
-# Alerts
-SLACK_WEBHOOK_URL=...
-ALERT_EMAIL=...
+The repository's `main` branch is protected: GitHub requires a pull request, a passing **Tests** check, and verified commit signatures. Do not push directly to `main`. If SSH commit signing is not configured yet, create an SSH key, add its public key to GitHub under **Settings → SSH and GPG keys** as a signing key, then configure Git once:
 
-# API
-API_RATE_LIMIT=10
-DEFAULT_TICKER=NFLX
+```powershell
+git config --global gpg.format ssh
+git config --global user.signingkey "$env:USERPROFILE\.ssh\id_ed25519.pub"
+git config --global commit.gpgsign true
 ```
 
----
+The Alpha Engine quant update is already pushed to `origin/publish/streamlit-refresh`. That branch contains the dashboard and quant changes, but Streamlit will not show them while the app tracks `main`. The current commits are unsigned, so create a signed snapshot branch from `main` before opening the required pull request. First make sure the working tree is clean; keep local `.vscode` settings and generated `__pycache__` files out of the snapshot.
 
-## Project Structure
-
-```
-src/
-  data_loader.py       # yfinance + Alpha Vantage + Alpaca + CSV
-  feature_utils.py     # shared feature computation
-  modeling.py          # ManualStackingRegressor + conformal
-  risk_manager.py      # ATR stop, Kelly, circuit breaker
-  model_registry.py    # versioned model saves
-  monitoring.py        # Slack/email alerts
-  regime_detection.py  # HMM Bull/Bear/Sideways
-  backtest.py          # Kelly + Sharpe/Sortino/Calmar
-  drift.py             # PSI + KS drift detection
-  paper_trade.py       # day-by-day live simulation
-  sentiment.py         # VADER news scoring
-  tuning.py            # Optuna hyperparameter search
-api/main.py            # FastAPI v2.0
-app/app.py             # Streamlit 9-tab dashboard
-tests/                 # 40+ unit tests
-.github/workflows/     # CI + weekly retraining
+```powershell
+git fetch origin
+git stash push -u -m "local VS Code settings and generated files"
+git switch -c publish/alpha-engine-quant-signed origin/main
+git merge --squash origin/publish/streamlit-refresh
+git status
+git commit -S -m "Add quant risk and low-latency L2 execution"
+git push -u origin publish/alpha-engine-quant-signed
+git stash pop
 ```
 
----
+On GitHub, create a pull request from `publish/alpha-engine-quant-signed` into `main`. Review the diff and merge after the **Tests** check and signature requirement pass. The same commands can be run in VS Code's integrated PowerShell terminal. If SSH commit signing is not configured, follow the setup commands above before creating the signed commit. After the signed branch is pushed, create the PR with `gh pr create --base main --head publish/alpha-engine-quant-signed` or use GitHub's **Compare & pull request** button.
 
-## Tech Stack
+After the pull request is merged, Streamlit Community Cloud updates automatically when its configured branch is `main`. If the app tracks another branch, either change the app's branch in its settings or merge the update into that configured branch. Check the Streamlit app logs if the new build does not start.
 
-Python · XGBoost · LightGBM · Scikit-learn · hmmlearn · Plotly · FastAPI · Streamlit · Optuna · Pytest · GitHub Actions · python-dotenv · yfinance · Alpha Vantage · Alpaca Markets
+### Later updates
+
+For changes made after the dashboard work is on `main`, use a new branch based on the latest `origin/main`, then commit and push it:
+
+```powershell
+git status
+git fetch origin
+git switch -c update/my-change origin/main
+git add -A
+git commit -S -m "Describe the change"
+git push -u origin update/my-change
+```
+
+Open a pull request from `update/my-change` into `main`, wait for **Tests**, then merge. This is the step that updates Streamlit when its configured branch is `main`.
+
+## Train the stock model
+
+Training is not needed to start the included dashboard. To retrain from the checked-in CSV and regenerate model and output artifacts:
+
+```powershell
+python main.py --source csv --ticker NFLX
+```
+
+For alternate sources, see `python main.py --help` and the API/data-provider setup in `.env.example`.
+
+## Optional FastAPI service and web UI
+
+The Streamlit dashboard runs independently. The repository also contains a FastAPI service (`api/`) and a Next.js web UI (`web/`). Start the API locally with:
+
+```powershell
+python -m pip install -r requirements-api.txt
+Copy-Item .env.example .env
+# Set a strong API_JWT_SECRET and the required API_USERS_JSON values in .env.
+python -m uvicorn api.main:app --reload
+```
+
+The API docs are at <http://localhost:8000/docs>. Never commit `.env`, broker credentials, or production secrets. The web UI can be started separately with `cd web; npm ci; npm run dev`; it expects the API to be available and configured.
+
+## Project layout
+
+```text
+app/app.py                   Streamlit research dashboard
+api/main.py                  FastAPI prediction, risk, execution, and streaming routes
+src/                         Data, features, models, backtests, risk, and agent code
+data/netflix.csv             Local historical market data
+models/model.pkl             Pre-trained model used by the dashboard
+outputs/features_cache.parquet  Cached features used by the dashboard and backtest
+web/                         Next.js web client
+tests/                       Automated tests
+```
+
+Run the test suite with `python -m pytest tests/ -q`. See [RESULTS.md](RESULTS.md) for recorded model results and [docs/PERFORMANCE_WHITEPAPER.md](docs/PERFORMANCE_WHITEPAPER.md) for evaluation and observability details.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+## Quant research and risk services
+
+The app includes a sequential backtester with causal fractional-Kelly and volatility sizing, a drawdown circuit breaker, variable spread and Almgren–Chriss style square-root plus quadratic market impact. Its report includes annualized return, Sharpe, Sortino, Calmar, 95% expected shortfall, maximum drawdown and drawdown duration. Start the interactive dashboard with `python -m streamlit run app/app.py`; use its Strategy Lab / Backtest view to inspect equity, drawdown, exposure, and rolling-Sharpe charts.
+
+Point-in-time feature definitions are in `feature_store.yaml` and `src/feature_store.py`; event-time and created-time checks in `point_in_time_join` prevent future or late-arriving observations from entering historical features. The optional Feast/Redis online store and asynchronous Kafka L2 consumer use `requirements-streaming.txt`. Kafka messages should be normalized to `ticker`, `event_timestamp`, and bid/ask price and size. Publish L2 data from an Alpaca/Polygon feed adapter to the configured topic (`L2_KAFKA_TOPIC`, default `alpaca.l2`). The consumer calculates OFI, VWAP, slippage, and spread features and publishes them to Redis.
+
+The authenticated FastAPI service exposes prediction SSE at `/api/v1/stream/predictions/{symbol}` and standardized explainable risk JSON at `/risk/position` and `/risk/matrix`. Model inference and broker execution spans use OpenTelemetry. Install optional services and start the API from the repository root:
+
+```powershell
+python -m pip install -r requirements-api.txt
+python -m pip install -r requirements-streaming.txt
+uvicorn api.main:app --host 0.0.0.0 --port 8000
+```
+
+Configure Redis, Kafka, JWT verification, and provider credentials using `.env.example` before enabling live integrations. The focused tests are `tests/test_feature_store.py` and `tests/test_almgren_chriss.py`; run them with `python -m pytest tests/test_feature_store.py tests/test_almgren_chriss.py`.
+
+### Live L2 ingestion and low-latency execution
+
+Run `python -m src.streaming.l2_websocket` to bridge provider websocket book snapshots into Kafka, then run `python -m src.streaming.kafka_consumer` to derive OFI, VWAP slippage, and spread features into Redis. Set `L2_WEBSOCKET_URL`, the provider's subscription payload in `L2_WEBSOCKET_SUBSCRIBE`, credentials, `KAFKA_BOOTSTRAP_SERVERS`, and Redis settings. The bridge requires full book snapshots or normalized `ticker`, event timestamp, bid/ask price and size fields; provider trade/top-of-book feeds alone are not full L2 depth.
+
+The standalone C++17 event loop in `hft/` reads normalized CSV snapshots (`event_ns,symbol,bid,bid_size,ask,ask_size`), calculates OFI and reports processing time in nanoseconds. Build it with `cmake -S hft -B hft/build; cmake --build hft/build`, then pipe a normalized feed into `hft/build/alpha_hft` (Windows: `hft/build/Debug/alpha_hft.exe`). It logs signals only by default. FIX transmission is disabled unless `FIX_HOST` and `FIX_PORT` point to an already authenticated FIX acceptor; configure sender/target IDs and conservative order caps before use. The FIX acceptor is responsible for session logon, sequencing, broker rules, and venue connectivity.

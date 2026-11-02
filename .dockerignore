@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+!.env.example
+.pytest_cache
+__pycache__
+*.py[cod]
+web/node_modules
+web/.next
+web/out
+data/catalog
+models/recommendations
+logs
